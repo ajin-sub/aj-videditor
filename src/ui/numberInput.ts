@@ -45,17 +45,30 @@ export function setupNumberInput(
     slider: HTMLInputElement,
     config: NumberInputConfig
 ): void {
+    input.type = 'text';
+    input.inputMode = 'decimal';
+    input.autocomplete = 'off';
+    input.min = String(config.min);
+    input.max = String(config.max);
+    input.classList.add('numeric-input');
     input.addEventListener('click', () => input.select());
     input.addEventListener('focus', () => input.select());
 
+    let committingFromEnter = false;
     input.addEventListener('keydown', (e) => {
         if (e.key === 'Enter') {
             e.preventDefault();
+            committingFromEnter = true;
             commitNumberInput(input, slider, config);
+            window.setTimeout(() => { committingFromEnter = false; }, 0);
         }
     });
 
     input.addEventListener('change', () => {
+        if (committingFromEnter) {
+            committingFromEnter = false;
+            return;
+        }
         commitNumberInput(input, slider, config);
     });
 }

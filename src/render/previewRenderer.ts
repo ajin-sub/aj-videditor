@@ -60,36 +60,27 @@ export function renderPreview(options: PreviewRenderOptions): void {
     ctx.arc(width / 2, height / 2, 4, 0, Math.PI * 2);
     ctx.fill();
 
-    const visibleClips = getClipsAtFrame(clips, currentFrame);
-    visibleClips.sort((a, b) => a.layerId - b.layerId);
-    const activeCameras = getActiveCameras(clips, currentFrame);
+    const visibleClips = getClipsAtFrame(clips, currentFrame)
+        .filter(clip => clip.type === 'text' || clip.type === 'shape')
+        .sort((a, b) => a.layerId - b.layerId);
 
     for (const clip of visibleClips) {
-        if (clip.type === 'camera') continue;
+        const drawX = width / 2 + clip.x;
+        const drawY = height / 2 + clip.y;
 
-        const applicableCameras = activeCameras.filter(camera => {
-            const range = camera.cameraRange || 10;
-            return clip.layerId > camera.layerId && clip.layerId <= camera.layerId + range;
-        });
-        const transformedClip = applicableCameras.length > 0
-            ? applyCameraTransform(clip, applicableCameras)
-            : clip;
-        const drawX = width / 2 + transformedClip.x;
-        const drawY = height / 2 + transformedClip.y;
-
-        if (transformedClip.type === 'text') {
-            drawText(ctx, transformedClip, drawX, drawY, defaultFont);
+        if (clip.type === 'text') {
+            drawText(ctx, clip, drawX, drawY, defaultFont);
             if (clip.id === selectedId) {
-                drawTextSelection(ctx, transformedClip, drawX, drawY, defaultFont);
+                drawTextSelection(ctx, clip, drawX, drawY, defaultFont);
             }
-        } else if (transformedClip.type === 'shape') {
+        } else if (clip.type === 'shape') {
             ctx.save();
             ctx.translate(drawX, drawY);
-            drawShape(ctx, transformedClip);
+            drawShape(ctx, clip);
             ctx.restore();
 
             if (clip.id === selectedId) {
-                drawShapeSelection(ctx, transformedClip, drawX, drawY);
+                drawShapeSelection(ctx, clip, drawX, drawY);
             }
         }
     }
@@ -164,25 +155,4 @@ function drawShapeSelection(
     ctx.strokeRect(-width / 2 - 10, -height / 2 - 10, width + 20, height + 20);
     ctx.setLineDash([]);
     ctx.restore();
-}
-
-function applyCameraTransform(clip: Clip, cameras: Clip[]): Clip {
-    let transformedClip = { ...clip };
-    for (const camera of cameras) {
-        transformedClip = {
-            ...transformedClip,
-            x: transformedClip.x - camera.x,
-            y: transformedClip.y - camera.y,
-            z: transformedClip.z - camera.z,
-        };
-    }
-    return transformedClip;
-}
-
-function getActiveCameras(clips: Clip[], frame: number): Clip[] {
-    return clips.filter(clip => {
-        return clip.type === 'camera' &&
-            frame >= clip.startFrame &&
-            frame < clip.startFrame + clip.duration;
-    });
 }

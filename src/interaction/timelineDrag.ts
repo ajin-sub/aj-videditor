@@ -5,7 +5,7 @@ export interface TimelineDragOptions {
     timelineHeight: number;
     timelineHeaderHeight: number;
     fps: () => number;
-    timelineDuration: () => number;
+    maxTimelineFrames: number;
     layerCount: () => number;
     getPixelsPerSecond: (containerWidth: number) => number;
     getClip: (id: string) => Clip | undefined;
@@ -41,7 +41,7 @@ export function createTimelineDrag(options: TimelineDragOptions): TimelineDragIn
         const pixelsPerSecond = options.getPixelsPerSecond(options.container.clientWidth - 4);
         const deltaX = (event.clientX - startMouseX) / pixelsPerSecond;
         let newStartFrame = Math.round(startFrame + deltaX * options.fps());
-        const maxStart = options.timelineDuration() - clip.duration;
+        const maxStart = options.maxTimelineFrames - clip.duration;
         newStartFrame = Math.max(0, Math.min(maxStart, newStartFrame));
 
         const trackY = event.clientY - rect.top - options.timelineHeaderHeight;
@@ -64,7 +64,7 @@ export function createTimelineDrag(options: TimelineDragOptions): TimelineDragIn
                     break;
                 }
                 testFrame += direction;
-                if (testFrame < 0 || testFrame > options.timelineDuration() - clip.duration) break;
+                if (testFrame < 0 || testFrame > options.maxTimelineFrames - clip.duration) break;
             }
             if (!found) clip.startFrame = oldStartFrame;
         }

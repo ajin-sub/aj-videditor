@@ -244,7 +244,7 @@
         }
         .setting-group select,
         .setting-group input[type="checkbox"],
-        .setting-group input[type="number"] {
+        .setting-group input.numeric-input {
             padding: 8px 12px;
             border-radius: 8px;
             border: 1px solid var(--border-color);
@@ -255,7 +255,7 @@
             transition: border 0.2s;
         }
         .setting-group select:focus,
-        .setting-group input[type="number"]:focus {
+        .setting-group input.numeric-input:focus {
             border-color: var(--accent);
         }
         .setting-group select option {
@@ -272,7 +272,7 @@
             font-size: 12px;
             color: #666;
         }
-        .setting-group .input-group input[type="number"] {
+        .setting-group .input-group input.numeric-input {
             width: 80px;
         }
 
@@ -345,17 +345,31 @@
             justify-content: center;
             align-items: center;
             overflow: hidden;
+            position: relative;
+            isolation: isolate;
         }
+        #sceneCanvas,
         #canvas {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
             width: 100%;
             aspect-ratio: 16 / 9;
-            background: #00000000;
             border-radius: 6px;
             display: block;
-            image-rendering: pixelated;
             max-width: 100%;
             max-height: 100%;
             object-fit: scale-down;
+        }
+        #sceneCanvas {
+            z-index: 1;
+            pointer-events: none;
+        }
+        #canvas {
+            z-index: 2;
+            background: transparent;
+            image-rendering: pixelated;
         }
 
         .resize-handle-horizontal {
@@ -524,7 +538,7 @@
             opacity: 0.3;
             cursor: not-allowed;
         }
-        .control-group input[type="number"] {
+        .control-group input.numeric-input {
             width: 72px;
             padding: 4px 6px;
             border-radius: 6px;
@@ -537,20 +551,12 @@
             outline: none;
             transition: border 0.2s, opacity 0.2s;
         }
-        .control-group input[type="number"]:focus {
+        .control-group input.numeric-input:focus {
             border-color: var(--accent);
         }
-        .control-group input[type="number"]:disabled {
+        .control-group input.numeric-input:disabled {
             opacity: 0.3;
             cursor: not-allowed;
-        }
-        .control-group input[type="number"]::-webkit-outer-spin-button,
-        .control-group input[type="number"]::-webkit-inner-spin-button {
-            -webkit-appearance: none;
-            margin: 0;
-        }
-        .control-group input[type="number"] {
-            -moz-appearance: textfield;
         }
 
         .coord-input {
@@ -576,7 +582,7 @@
             font-weight: 600;
             font-family: 'Consolas', monospace;
         }
-        .coord-input input[type="number"] {
+        .coord-input input.numeric-input {
             width: 54px;
             border: none;
             background: transparent;
@@ -587,17 +593,9 @@
             text-align: center;
             outline: none;
         }
-        .coord-input input[type="number"]:focus {
+        .coord-input input.numeric-input:focus {
             border: none;
             outline: none;
-        }
-        .coord-input input[type="number"]::-webkit-outer-spin-button,
-        .coord-input input[type="number"]::-webkit-inner-spin-button {
-            -webkit-appearance: none;
-            margin: 0;
-        }
-        .coord-input input[type="number"] {
-            -moz-appearance: textfield;
         }
 
         .btn-primary {
@@ -652,7 +650,7 @@
             align-items: center;
             gap: 6px;
         }
-        .time-input-group input[type="number"] {
+        .time-input-group input.numeric-input {
             width: 72px;
         }
         .time-input-group .unit {
@@ -706,6 +704,8 @@
 
         /* ----- タイムライン ----- */
         .bottom-section {
+            position: relative;
+            z-index: 6;
             background: var(--bg-secondary);
             border-radius: 0;
             border: none;
@@ -773,6 +773,34 @@
             display: flex;
             align-items: center;
             gap: 8px;
+        }
+        .camera-menu {
+            position: relative;
+        }
+        .camera-menu > summary {
+            list-style: none;
+            cursor: pointer;
+            user-select: none;
+        }
+        .camera-menu > summary::-webkit-details-marker {
+            display: none;
+        }
+        .camera-menu-items {
+            position: absolute;
+            right: 0;
+            top: calc(100% + 6px);
+            z-index: 30;
+            display: grid;
+            min-width: 220px;
+            padding: 6px;
+            gap: 4px;
+            background: var(--bg-secondary);
+            border: 1px solid var(--border-color);
+            box-shadow: 0 8px 24px var(--shadow);
+        }
+        .camera-menu-items button {
+            text-align: left;
+            white-space: nowrap;
         }
 
         #timelineContainer {
@@ -960,21 +988,13 @@
             gap: 8px;
             flex: 1;
         }
-        #addLayerInputContainer input[type="number"] {
+        #addLayerInputContainer input.numeric-input {
             width: 60px;
             padding: 4px 8px;
             border-radius: 6px;
             border: 1px solid var(--border-color);
             background: var(--bg-primary);
             color: var(--text-primary);
-        }
-        #addLayerInputContainer input[type="number"]::-webkit-outer-spin-button,
-        #addLayerInputContainer input[type="number"]::-webkit-inner-spin-button {
-            -webkit-appearance: none;
-            margin: 0;
-        }
-        #addLayerInputContainer input[type="number"] {
-            -moz-appearance: textfield;
         }
         #addLayerInputContainer .hint {
             font-size: 12px;
@@ -1073,7 +1093,7 @@
             .settings-header h2 {
                 font-size: 18px;
             }
-            .setting-group .input-group input[type="number"] {
+            .setting-group .input-group input.numeric-input {
                 width: 60px;
             }
             .timeline-add-layer {
@@ -1088,7 +1108,7 @@
                 flex-wrap: wrap;
                 gap: 4px;
             }
-            #addLayerInputContainer input[type="number"] {
+            #addLayerInputContainer input.numeric-input {
                 width: 50px;
             }
             .resize-handle-horizontal {
@@ -1259,6 +1279,7 @@
 
                     <!-- ★ Editor タブ ★ -->
                     <div class="tab-content" id="tabEditor">
+                        <input type="checkbox" id="overlapToggle" checked disabled hidden />
                         <div class="setting-group">
                             <label for="themeSelect">Theme</label>
                             <select id="themeSelect">
@@ -1277,12 +1298,6 @@
                             </select>
                         </div>
 
-                        <div class="setting-group">
-                            <div class="checkbox-group">
-                                <input type="checkbox" id="overlapToggle" checked />
-                                <label for="overlapToggle">アイテムの重なり防止</label>
-                            </div>
-                        </div>
                     </div>
                 </div>
 
@@ -1298,6 +1313,7 @@
         <div class="main-content">
             <div class="top-section" id="topSection">
                 <div class="canvas-wrapper" id="canvasWrapper">
+                    <canvas id="sceneCanvas" width="1920" height="1080" aria-label="3D preview"></canvas>
                     <canvas id="canvas" width="1920" height="1080"></canvas>
                 </div>
 
@@ -1309,6 +1325,10 @@
                         <span id="typeDisplay" style="font-size:13px;color:var(--text-secondary);">-</span>
                     </div>
 
+                    <div class="control-group checkbox-group" id="cameraDisabledGroup" style="display:none;">
+                        <input type="checkbox" id="cameraDisabledInput" />
+                        <label for="cameraDisabledInput">カメラを適用しない</label>
+                    </div>
                     <div id="textProperties">
                         <div class="control-group">
                             <label>Text</label>
@@ -1387,19 +1407,34 @@
                         </div>
                     </div>
                     
-                    <!-- ★ カメラ用のプロパティ（カメラ選択時のみ表示） -->
                     <div id="cameraProperties" style="display:none;">
-                        <div class="control-group">
-                            <label>Range</label>
-                            <div class="time-input-group">
-                                <input type="number" id="cameraRangeInput" value="10" min="1" max="98" />
-                                <span class="unit">layers</span>
+                        <div id="orbitCameraProperties" style="display:none;">
+                            <div class="control-group">
+                                <label>垂直角</label>
+                                <input type="range" id="cameraVerticalAngleSlider" min="-89" max="89" value="0" step="1" />
+                                <input type="number" id="cameraVerticalAngleNumber" value="0" min="-89" max="89" step="1" />
+                            </div>
+                            <div class="control-group">
+                                <label>水平角</label>
+                                <input type="range" id="cameraHorizontalAngleSlider" min="-180" max="180" value="0" step="1" />
+                                <input type="number" id="cameraHorizontalAngleNumber" value="0" min="-180" max="180" step="1" />
+                            </div>
+                            <div class="control-group">
+                                <label>中心からの距離（基準値への加算）</label>
+                                <input type="range" id="cameraOrbitDistanceSlider" min="-500" max="500" value="0" step="1" />
+                                <input type="number" id="cameraOrbitDistanceNumber" value="0" min="-8000" max="8000" step="1" />
+                            </div>
+                        </div>
+                        <div id="fovCameraProperties" style="display:none;">
+                            <div class="control-group">
+                                <label>FOV</label>
+                                <input type="range" id="cameraFovSlider" min="1" max="179" value="50" step="1" />
+                                <input type="number" id="cameraFovInput" value="50" min="1" max="179" step="1" />
                             </div>
                         </div>
                     </div>
 
-                    <hr class="separator" />
-
+                    <div id="positionProperties">
                     <div class="control-group">
                         <label>X</label>
                         <input type="range" id="xPos" min="-500" max="500" value="0" step="1" />
@@ -1424,15 +1459,36 @@
                             <input type="number" id="zNumber" value="0" min="-8000" max="8000" />
                         </div>
                     </div>
-                    <div class="control-group">
-                        <label>Rotation</label>
-                        <input type="range" id="rotationSlider" min="-180" max="180" value="0" step="1" />
-                        <div class="coord-input">
-                            <span>R:</span>
-                            <input type="number" id="rotationNumber" value="0" min="-1440" max="1440" step="1" />
-                            <span style="font-size:12px;color:#666;">°</span>
+                    </div>
+                    <div id="rotationProperties">
+                        <div class="control-group">
+                            <label>Rotation Z</label>
+                            <input type="range" id="rotationSlider" min="-180" max="180" value="0" step="1" />
+                            <div class="coord-input">
+                                <span>R:</span>
+                                <input type="number" id="rotationNumber" value="0" min="-1440" max="1440" step="1" />
+                                <span style="font-size:12px;color:#666;">°</span>
+                            </div>
+                        </div>
+                        <div class="control-group">
+                            <label>Rotation X</label>
+                            <input type="range" id="rotationXSlider" min="-180" max="180" value="0" step="1" />
+                            <div class="coord-input">
+                                <input type="number" id="rotationXNumber" value="0" min="-1440" max="1440" step="1" />
+                                <span style="font-size:12px;color:#666;">°</span>
+                            </div>
+                        </div>
+                        <div class="control-group">
+                            <label>Rotation Y</label>
+                            <input type="range" id="rotationYSlider" min="-180" max="180" value="0" step="1" />
+                            <div class="coord-input">
+                                <input type="number" id="rotationYNumber" value="0" min="-1440" max="1440" step="1" />
+                                <span style="font-size:12px;color:#666;">°</span>
+                            </div>
                         </div>
                     </div>
+
+                    <hr class="separator" />
 
                     <hr class="separator" />
 
@@ -1468,7 +1524,15 @@
                     <div class="timeline-actions">
                         <button class="btn-primary btn-sm" id="addTextBtn">📝 テキスト</button>
                         <button class="btn-primary btn-sm" id="addShapeBtn">⬜ 図形</button>
-                        <button class="btn-primary btn-sm" id="addCameraBtn">📷 カメラ</button>
+                        <details class="camera-menu" id="cameraMenu">
+                            <summary class="btn-primary btn-sm">📷 カメラ ▾</summary>
+                            <div class="camera-menu-items">
+                                <button class="btn-primary btn-sm" id="addCameraPositionBtn">カメラ - 位置・角度</button>
+                                <button class="btn-primary btn-sm" id="addCameraOrbitBtn">カメラ - 回り込み</button>
+                                <button class="btn-primary btn-sm" id="addRotationControlBtn">回転制御</button>
+                                <button class="btn-primary btn-sm" id="addFovControlBtn">視野制御</button>
+                            </div>
+                        </details>
                         <button class="btn-primary btn-sm btn-danger" id="deleteBtn">×</button>
 
                         <!-- ★ 追加: プロジェクト保存/読み込みボタン -->

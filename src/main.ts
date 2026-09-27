@@ -17,7 +17,7 @@ import {
     updateTimelineDuration as calculateTimelineDuration,
 } from './domain/timeline';
 import { createClip } from './domain/clipFactory';
-import { renderPreview } from './render/previewRenderer';
+import { ThreePreviewRenderer } from './render/threePreviewRenderer';
 import { renderTimeline } from './render/timelineRenderer';
 import { createPlaybackController } from './interaction/playback';
 import { createTimelineSeek } from './interaction/timelineSeek';
@@ -62,11 +62,8 @@ import {
     syncPropertyPanel,
     updateSelectedClip,
 } from './ui/propertyPanel';
-import {
-    getCanvasCoords as getPreviewCanvasCoords,
-    getClipAtPosition as getPreviewClipAtPosition,
-    setupPreviewDrag as setupPreviewDragInteraction,
-} from './interaction/previewInteraction';
+import { setupNumberInput } from './ui/numberInput';
+import { setupPreviewDrag as setupPreviewDragInteraction } from './interaction/previewInteraction';
 import {
     loadSettings as loadStoredSettings,
     saveSettings as saveStoredSettings,
@@ -79,12 +76,21 @@ let TIMELINE_DURATION_SEC = TIMELINE_DURATION / CONFIG.fps
 // -------- DOM要素 --------
 const canvas = document.getElementById('canvas') as HTMLCanvasElement;
 const ctx = canvas.getContext('2d')!;
+const sceneCanvas = document.getElementById('sceneCanvas') as HTMLCanvasElement;
+const sceneRenderer = new ThreePreviewRenderer({
+    canvas: sceneCanvas,
+    width: CONFIG.resolution.width,
+    height: CONFIG.resolution.height,
+    backgroundColor: CONFIG.bgColor,
+});
 
 // X,Y,Z,Rotation等
 const xSlider = document.getElementById('xPos') as HTMLInputElement;
 const ySlider = document.getElementById('yPos') as HTMLInputElement;
 const zSlider = document.getElementById('zPos') as HTMLInputElement;
 const rotationSlider = document.getElementById('rotationSlider') as HTMLInputElement;
+const rotationXSlider = document.getElementById('rotationXSlider') as HTMLInputElement;
+const rotationYSlider = document.getElementById('rotationYSlider') as HTMLInputElement;
 const startInput = document.getElementById('startInput') as HTMLInputElement;
 const durationInput = document.getElementById('durationInput') as HTMLInputElement;
 // 数値入力欄
@@ -120,7 +126,23 @@ const shapeHeightNumber = document.getElementById('shapeHeightNumber') as HTMLIn
 
 // カメラ用DOM
 const cameraProperties = document.getElementById('cameraProperties') as HTMLDivElement;
-const cameraRangeInput = document.getElementById('cameraRangeInput') as HTMLInputElement;
+const cameraDisabledGroup = document.getElementById('cameraDisabledGroup') as HTMLDivElement;
+const cameraDisabledInput = document.getElementById('cameraDisabledInput') as HTMLInputElement;
+const positionProperties = document.getElementById('positionProperties') as HTMLDivElement;
+const rotationProperties = document.getElementById('rotationProperties') as HTMLDivElement;
+const orbitCameraProperties = document.getElementById('orbitCameraProperties') as HTMLDivElement;
+const fovCameraProperties = document.getElementById('fovCameraProperties') as HTMLDivElement;
+const cameraFovInput = document.getElementById('cameraFovInput') as HTMLInputElement;
+const cameraFovSlider = document.getElementById('cameraFovSlider') as HTMLInputElement;
+const cameraVerticalAngleSlider = document.getElementById('cameraVerticalAngleSlider') as HTMLInputElement;
+const cameraHorizontalAngleSlider = document.getElementById('cameraHorizontalAngleSlider') as HTMLInputElement;
+const cameraOrbitDistanceSlider = document.getElementById('cameraOrbitDistanceSlider') as HTMLInputElement;
+const cameraVerticalAngleNumber = document.getElementById('cameraVerticalAngleNumber') as HTMLInputElement;
+const cameraHorizontalAngleNumber = document.getElementById('cameraHorizontalAngleNumber') as HTMLInputElement;
+const cameraOrbitDistanceNumber = document.getElementById('cameraOrbitDistanceNumber') as HTMLInputElement;
+const cameraMenu = document.getElementById('cameraMenu') as HTMLDetailsElement;
+const rotationXNumber = document.getElementById('rotationXNumber') as HTMLInputElement;
+const rotationYNumber = document.getElementById('rotationYNumber') as HTMLInputElement;
 
 // 再生開始
 const playBtn = document.getElementById('playBtn') as HTMLButtonElement;
@@ -179,6 +201,7 @@ let isDraggingX = false;
 let isDraggingY = false;
 let isDraggingZ = false;
 let isDraggingRotation = false;
+let isDraggingCameraOrbitDistance = false;
 let isDraggingStroke = false;
 let isDraggingWidth = false;
 let isDraggingHeight = false;
@@ -250,7 +273,7 @@ timelineDrag = createTimelineDrag({
     timelineHeight: TIMELINE_HEIGHT,
     timelineHeaderHeight: TIMELINE_HEADER_HEIGHT,
     fps: () => CONFIG.fps,
-    timelineDuration: () => TIMELINE_DURATION,
+    maxTimelineFrames: MAX_TIMELINE_FRAMES,
     layerCount: () => currentLayerCount,
     getPixelsPerSecond,
     getClip: (id) => clips.find(clip => clip.id === id),
@@ -362,35 +385,15 @@ function applyTheme(themeName: string): void {
 
 // -------- プレビュー描画 --------
 function drawPreview(): void {
-    renderPreview({
-        ctx,
-        clips,
-        currentFrame,
-        selectedId,
-        width: CONFIG.resolution.width,
-        height: CONFIG.resolution.height,
-        backgroundColor: CONFIG.bgColor,
-        defaultFont: DEFAULT_FONT,
-    });
-}
-
-// 共通の座標変換関数
-function getCanvasCoords(e: MouseEvent): { x: number, y: number } {
-    return getPreviewCanvasCoords(canvas, e);
+    sceneRenderer.resize(CONFIG.resolution.width, CONFIG.resolution.height);
+    sceneRenderer.render(clips, currentFrame, selectedId, CONFIG.bgColor);
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
 }
 
 // -------- プレビュードラッグ --------
-function getClipAtPosition(cx: number, cy: number): Clip | null {
-    return getPreviewClipAtPosition(
-        ctx,
-        clips,
-        currentFrame,
-        cx,
-        cy,
-        CONFIG.resolution.width,
-        CONFIG.resolution.height,
-        DEFAULT_FONT
-    );
+function getClipAtPosition(clientX: number, clientY: number): Clip | null {
+    const clipId = sceneRenderer.pick(clientX, clientY);
+    return clips.find(clip => clip.id === clipId) || null;
 }
 
 function setupPreviewDrag(): void {
@@ -402,12 +405,24 @@ function setupPreviewDrag(): void {
         width: CONFIG.resolution.width,
         height: CONFIG.resolution.height,
         defaultFont: DEFAULT_FONT,
+        pickClip: getClipAtPosition,
+        getClipPosition: (clientX, clientY, clip) => sceneRenderer.pointerToClipPosition(clientX, clientY, clip),
         onSelect: (clip) => {
             selectedId = clip.id;
             syncUI();
         },
-        onMove: (clip, newX, newY) => {
+        onMove: (clip, newX, newY, deltaX, deltaY) => {
             if (selectedId !== clip.id) return;
+            if (clip.type === 'cameraOrbit') {
+                sceneRenderer.orbitCamera(clip, deltaX, deltaY);
+                cameraVerticalAngleSlider.value = String(clip.cameraVerticalAngle || 0);
+                cameraVerticalAngleNumber.value = cameraVerticalAngleSlider.value;
+                cameraHorizontalAngleSlider.value = String(clip.cameraHorizontalAngle || 0);
+                cameraHorizontalAngleNumber.value = cameraHorizontalAngleSlider.value;
+                return;
+            }
+            clip.x = newX;
+            clip.y = newY;
             xNumber.value = String(newX);
             xSlider.value = String(newX);
             yNumber.value = String(newY);
@@ -422,40 +437,50 @@ function setupPreviewDrag(): void {
     });
 }
 
-// -------- プレビュー上のテキストをホイールでサイズ変更 --------
-canvas.addEventListener('wheel', (e: WheelEvent) => {
-    // マウス位置のクリップを取得
-    const pos = getCanvasCoords(e);
-    const clip = getClipAtPosition(pos.x, pos.y);
+function setupCameraOrbit(): void {
+    let previousX = 0;
+    let previousY = 0;
+    let orbiting = false;
 
-    // テキストクリップ以外は無視
-    if (!clip || clip.type !== 'text') return;
-
-    // 重なり対応: 同じ位置に複数ある場合は最前面（layerIdが最大）を選ぶ
-    const visibleClips = getClipsAtFrame(currentFrame);
-    const textClipsAtPos = visibleClips.filter(c => {
-        if (c.type !== 'text') return false;
-        const drawX = CONFIG.resolution.width / 2 + c.x;
-        const drawY = CONFIG.resolution.height / 2 + c.y;
-        const lines = c.text?.split('\n') || [''];
-        const fontSize = c.fontSize || 48;
-        const lineHeight = fontSize * 1.2;
-        const height = lines.length * lineHeight;
-        let maxWidth = 0;
-        ctx.font = `${fontSize}px ${c.fontFamily || DEFAULT_FONT}`;
-        for (const line of lines) {
-            const metrics = ctx.measureText(line);
-            if (metrics.width > maxWidth) maxWidth = metrics.width;
-        }
-        const width = (maxWidth || 100) + 20;
-        const halfW = width / 2;
-        const halfH = (height + 20) / 2;
-        return pos.x >= drawX - halfW && pos.x <= drawX + halfW &&
-            pos.y >= drawY - halfH && pos.y <= drawY + halfH;
+    canvas.addEventListener('contextmenu', event => event.preventDefault());
+    canvas.addEventListener('mousedown', event => {
+        const selected = getSelected();
+        if (event.button !== 2 || selected?.type !== 'cameraOrbit') return;
+        orbiting = true;
+        previousX = event.clientX;
+        previousY = event.clientY;
+        document.body.style.cursor = 'grabbing';
+        event.preventDefault();
     });
 
-    // 最前面（layerIdが最大）のテキストを選ぶ
-    const targetClip = textClipsAtPos.sort((a, b) => b.layerId - a.layerId)[0];
+    document.addEventListener('mousemove', event => {
+        if (!orbiting) return;
+        const selected = getSelected();
+        if (selected?.type !== 'cameraOrbit') return;
+        sceneRenderer.orbitCamera(selected, event.clientX - previousX, event.clientY - previousY);
+        previousX = event.clientX;
+        previousY = event.clientY;
+        cameraVerticalAngleSlider.value = String(selected.cameraVerticalAngle || 0);
+        cameraVerticalAngleNumber.value = cameraVerticalAngleSlider.value;
+        cameraHorizontalAngleSlider.value = String(selected.cameraHorizontalAngle || 0);
+        cameraHorizontalAngleNumber.value = cameraHorizontalAngleSlider.value;
+        drawPreview();
+    });
+
+    const stopOrbit = (): void => {
+        if (!orbiting) return;
+        orbiting = false;
+        document.body.style.cursor = '';
+        syncUI();
+    };
+    document.addEventListener('mouseup', stopOrbit);
+    document.addEventListener('mouseleave', stopOrbit);
+}
+
+// -------- プレビュー上のテキストをホイールでサイズ変更 --------
+canvas.addEventListener('wheel', (e: WheelEvent) => {
+    const targetClip = getClipAtPosition(e.clientX, e.clientY);
+    if (!targetClip || targetClip.type !== 'text') return;
     if (!targetClip) return;
 
     // スクロール防止
@@ -511,6 +536,19 @@ function drawTimeline(): void {
     const containerHeight = timelineContainer.clientHeight || Math.min(totalHeight + 8 + 32, 500);
     timelineContainer.style.height = `${Math.max(80, containerHeight)}px`;
     timelineContainer.innerHTML = html;
+
+    const addLayerCountInput = document.getElementById('addLayerCountInput') as HTMLInputElement | null;
+    if (addLayerCountInput) {
+        setupNumberInput(addLayerCountInput, addLayerCountInput, {
+            min: 1,
+            max: 99,
+            default: 1,
+            stages: null,
+            getIsDragging: () => false,
+            updateSliderRangeFn: () => undefined,
+            onCommit: () => undefined,
+        });
+    }
 
     document.querySelectorAll<HTMLElement>('.timeline-clip').forEach(el => {
         el.addEventListener('click', (e) => {
@@ -582,7 +620,6 @@ function drawTimeline(): void {
 
     const addLayerBtn = document.getElementById('addLayerBtn');
     const addLayerInputContainer = document.getElementById('addLayerInputContainer');
-    const addLayerCountInput = document.getElementById('addLayerCountInput') as HTMLInputElement;
     const confirmAddLayerBtn = document.getElementById('confirmAddLayerBtn');
     const cancelAddLayerBtn = document.getElementById('cancelAddLayerBtn');
 
@@ -599,6 +636,7 @@ function drawTimeline(): void {
 
     if (confirmAddLayerBtn) {
         confirmAddLayerBtn.addEventListener('click', () => {
+            addLayerCountInput?.dispatchEvent(new Event('change'));
             const val = parseInt(addLayerCountInput?.value || '1', 10);
             if (!isNaN(val) && val > 0) {
                 const newCount = Math.min(currentLayerCount + val, MAX_LAYERS);
@@ -767,15 +805,21 @@ function zoomTimeline(factor: number): void {
 
 // -------- UI同期 --------
 function syncUI(): void {
+    const selectedClip = getSelected();
     const propertyInputs = {
         textInput, fontSelect, fontSizeSlider, colorPicker, fontSizeNumber,
         shapeTypeSelect, fillColorPicker, strokeColorPicker, strokeWidthSlider,
         shapeWidthSlider, shapeHeightSlider, strokeWidthNumber, shapeWidthNumber,
-        shapeHeightNumber, cameraRangeInput, xSlider, ySlider, zSlider,
-        rotationSlider, xNumber, yNumber, zNumber, rotationNumber,
+        shapeHeightNumber, xSlider, ySlider, zSlider,
+        rotationSlider, rotationXSlider, rotationYSlider,
+        rotationXNumber, rotationYNumber, xNumber, yNumber, zNumber, rotationNumber,
+        cameraFovInput, cameraFovSlider,
+        cameraVerticalAngleNumber, cameraVerticalAngleSlider,
+        cameraHorizontalAngleNumber, cameraHorizontalAngleSlider,
+        cameraOrbitDistanceNumber, cameraOrbitDistanceSlider,
     };
     syncPropertyPanel({
-        selected: getSelected(),
+        selected: selectedClip,
         hasClips: clips.length > 0,
         defaultFont: DEFAULT_FONT,
         inputs: propertyInputs,
@@ -802,6 +846,39 @@ function syncUI(): void {
         fontSizeStages: SLIDER_STAGES.fontSize,
         setEnabled: (enabled) => setPropertyInputsEnabled(enabled, propertyInputs, startInput, durationInput),
     });
+
+    const type = selectedClip?.type;
+    const isVisualClip = type === 'text' || type === 'shape';
+    const canEditPosition = type === 'text' || type === 'shape' || type === 'cameraPosition' || type === 'rotationControl';
+    const canEditRotation = type === 'text' || type === 'shape' || type === 'cameraPosition';
+    positionProperties.style.display = canEditPosition ? '' : 'none';
+    rotationProperties.style.display = canEditRotation ? '' : 'none';
+    orbitCameraProperties.style.display = type === 'cameraOrbit' ? '' : 'none';
+    fovCameraProperties.style.display = type === 'fovControl' ? '' : 'none';
+    cameraDisabledGroup.style.display = isVisualClip ? '' : 'none';
+    cameraDisabledInput.checked = Boolean(selectedClip?.cameraDisabled);
+    cameraFovInput.disabled = type !== 'fovControl';
+    cameraFovSlider.disabled = type !== 'fovControl';
+    cameraVerticalAngleSlider.disabled = type !== 'cameraOrbit';
+    cameraHorizontalAngleSlider.disabled = type !== 'cameraOrbit';
+    cameraOrbitDistanceSlider.disabled = type !== 'cameraOrbit';
+    cameraVerticalAngleNumber.disabled = type !== 'cameraOrbit';
+    cameraHorizontalAngleNumber.disabled = type !== 'cameraOrbit';
+    cameraOrbitDistanceNumber.disabled = type !== 'cameraOrbit';
+    cameraFovInput.value = String(selectedClip?.type === 'fovControl' ? selectedClip.cameraFov ?? 50 : 50);
+    cameraFovSlider.value = cameraFovInput.value;
+    cameraVerticalAngleSlider.value = String(selectedClip?.type === 'cameraOrbit' ? selectedClip.cameraVerticalAngle || 0 : 0);
+    cameraVerticalAngleNumber.value = cameraVerticalAngleSlider.value;
+    cameraHorizontalAngleSlider.value = String(selectedClip?.type === 'cameraOrbit' ? selectedClip.cameraHorizontalAngle || 0 : 0);
+    cameraHorizontalAngleNumber.value = cameraHorizontalAngleSlider.value;
+    cameraOrbitDistanceSlider.value = String(selectedClip?.type === 'cameraOrbit' ? selectedClip.cameraOrbitDistance || 0 : 0);
+    cameraOrbitDistanceNumber.value = cameraOrbitDistanceSlider.value;
+    updateSliderRange(
+        cameraOrbitDistanceSlider,
+        selectedClip?.type === 'cameraOrbit' ? selectedClip.cameraOrbitDistance || 0 : 0,
+        SLIDER_STAGES.coord,
+        isDraggingCameraOrbitDistance
+    );
 
     drawTimeline();
     drawPreview();
@@ -846,7 +923,8 @@ function deleteSelected(): void {
 
 // -------- 選択中のプロパティ更新 --------
 function updateSelected(): void {
-    updateSelectedClip(getSelected(), {
+    const selectedClip = getSelected();
+    updateSelectedClip(selectedClip, {
         textInput,
         fontSelect,
         fontSizeSlider,
@@ -861,16 +939,41 @@ function updateSelected(): void {
         strokeWidthNumber,
         shapeWidthNumber,
         shapeHeightNumber,
-        cameraRangeInput,
         xSlider,
         ySlider,
         zSlider,
         rotationSlider,
+        rotationXSlider,
+        rotationYSlider,
         xNumber,
         yNumber,
         zNumber,
         rotationNumber,
+        rotationXNumber,
+        rotationYNumber,
+        cameraFovInput,
+        cameraFovSlider,
+        cameraVerticalAngleNumber,
+        cameraVerticalAngleSlider,
+        cameraHorizontalAngleNumber,
+        cameraHorizontalAngleSlider,
+        cameraOrbitDistanceNumber,
+        cameraOrbitDistanceSlider,
     }, () => {
+        if (selectedClip) {
+            if (selectedClip.type === 'fovControl') {
+                selectedClip.cameraFov = Math.max(1, Math.min(179, parseFloat(cameraFovInput.value) || 50));
+                cameraFovInput.value = String(selectedClip.cameraFov);
+                cameraFovSlider.value = cameraFovInput.value;
+            } else if (selectedClip.type === 'cameraOrbit') {
+                selectedClip.cameraVerticalAngle = parseFloat(cameraVerticalAngleSlider.value) || 0;
+                selectedClip.cameraHorizontalAngle = parseFloat(cameraHorizontalAngleSlider.value) || 0;
+                selectedClip.cameraOrbitDistance = parseFloat(cameraOrbitDistanceSlider.value) || 0;
+                cameraVerticalAngleNumber.value = String(selectedClip.cameraVerticalAngle);
+                cameraHorizontalAngleNumber.value = String(selectedClip.cameraHorizontalAngle);
+                cameraOrbitDistanceNumber.value = String(selectedClip.cameraOrbitDistance);
+            }
+        }
         drawPreview();
         drawTimeline();
     });
@@ -883,8 +986,13 @@ function setupAllNumberInputs(): void {
             textInput, fontSelect, fontSizeSlider, colorPicker, fontSizeNumber,
             shapeTypeSelect, fillColorPicker, strokeColorPicker, strokeWidthSlider,
             shapeWidthSlider, shapeHeightSlider, strokeWidthNumber, shapeWidthNumber,
-            shapeHeightNumber, cameraRangeInput, xSlider, ySlider, zSlider,
-            rotationSlider, xNumber, yNumber, zNumber, rotationNumber,
+            shapeHeightNumber, xSlider, ySlider, zSlider,
+            rotationSlider, rotationXSlider, rotationYSlider,
+            rotationXNumber, rotationYNumber, xNumber, yNumber, zNumber, rotationNumber,
+            cameraFovInput, cameraFovSlider,
+            cameraVerticalAngleNumber, cameraVerticalAngleSlider,
+            cameraHorizontalAngleNumber, cameraHorizontalAngleSlider,
+            cameraOrbitDistanceNumber, cameraOrbitDistanceSlider,
         },
         startInput,
         durationInput,
@@ -928,11 +1036,7 @@ setupSettingsPanel({
     canvas,
 }, {
     applyTheme,
-    setOverlapPrevention: (enabled) => {
-        CONFIG.preventOverlap = enabled;
-        overlapToggle.checked = enabled;
-        saveSettings();
-    },
+    setOverlapPrevention: () => setOverlapPrevention(true),
     setLayerCount,
     setBackgroundColor,
     setResolution: (width, height) => {
@@ -962,11 +1066,15 @@ addShapeBtn.addEventListener('click', () => {
     addClip('shape');
 });
 
-// カメラ
-const addCameraBtn = document.getElementById('addCameraBtn') as HTMLButtonElement;
-if (addCameraBtn) {
-    addCameraBtn.addEventListener('click', () => {
-        addClip('camera');
+for (const [buttonId, type] of [
+    ['addCameraPositionBtn', 'cameraPosition'],
+    ['addCameraOrbitBtn', 'cameraOrbit'],
+    ['addRotationControlBtn', 'rotationControl'],
+    ['addFovControlBtn', 'fovControl'],
+] as const) {
+    document.getElementById(buttonId)?.addEventListener('click', () => {
+        addClip(type);
+        cameraMenu.open = false;
     });
 }
 
@@ -982,7 +1090,11 @@ colorPicker.addEventListener('input', updateSelected);
 
 shapeTypeSelect.addEventListener('change', updateSelected);
 fillColorPicker.addEventListener('input', updateSelected);
-strokeColorPicker.addEventListener('input', updateSelected);
+strokeColorPicker.addEventListener('input', () => {
+    const selected = getSelected();
+    if (selected?.type === 'shape') selected.strokeColor = strokeColorPicker.value;
+    updateSelected();
+});
 strokeWidthSlider.addEventListener('input', updateSelected);
 shapeWidthSlider.addEventListener('input', updateSelected);
 shapeHeightSlider.addEventListener('input', updateSelected);
@@ -991,23 +1103,50 @@ xSlider.addEventListener('input', updateSelected);
 ySlider.addEventListener('input', updateSelected);
 zSlider.addEventListener('input', updateSelected);
 rotationSlider.addEventListener('input', updateSelected);
+rotationXSlider.addEventListener('input', updateSelected);
+rotationYSlider.addEventListener('input', updateSelected);
+cameraDisabledInput.addEventListener('change', () => {
+    const selected = getSelected();
+    if (selected?.type !== 'text' && selected?.type !== 'shape') return;
+    selected.cameraDisabled = cameraDisabledInput.checked;
+    drawPreview();
+});
+cameraFovSlider.addEventListener('input', () => {
+    cameraFovInput.value = cameraFovSlider.value;
+    updateSelected();
+});
+for (const [slider, number] of [
+    [cameraVerticalAngleSlider, cameraVerticalAngleNumber],
+    [cameraHorizontalAngleSlider, cameraHorizontalAngleNumber],
+    [cameraOrbitDistanceSlider, cameraOrbitDistanceNumber],
+] as const) {
+    slider.addEventListener('input', () => {
+        number.value = slider.value;
+        updateSelected();
+    });
+}
 
 setupPropertySliderDrags({
     xSlider,
     ySlider,
     zSlider,
     rotationSlider,
+    rotationXSlider,
+    rotationYSlider,
     strokeWidthSlider,
     shapeWidthSlider,
     shapeHeightSlider,
     fontSizeSlider,
     fontSizeNumber,
+    cameraOrbitDistanceSlider,
     getSelected,
     setDragging: (key, isDragging) => {
         if (key === 'x') isDraggingX = isDragging;
         if (key === 'y') isDraggingY = isDragging;
         if (key === 'z') isDraggingZ = isDragging;
         if (key === 'rotation') isDraggingRotation = isDragging;
+        if (key === 'rotationX' || key === 'rotationY') isDraggingRotation = isDragging;
+        if (key === 'cameraOrbitDistance') isDraggingCameraOrbitDistance = isDragging;
         if (key === 'stroke') isDraggingStroke = isDragging;
         if (key === 'width') isDraggingWidth = isDragging;
         if (key === 'height') isDraggingHeight = isDragging;
@@ -1041,15 +1180,14 @@ setupLayoutResize({
     onVerticalResize: drawTimeline,
 });
 setupPreviewDrag();
+setupCameraOrbit();
 
 // -------- 設定切り替え用関数 --------
-function setOverlapPrevention(enabled: boolean): void {
-    CONFIG.preventOverlap = enabled;
-    overlapToggle.checked = enabled;
-    if (enabled) {
-        for (const clip of clips) resolveOverlap(clip, clip.id);
-        syncUI();
-    }
+function setOverlapPrevention(_enabled: boolean): void {
+    CONFIG.preventOverlap = true;
+    overlapToggle.checked = true;
+    for (const clip of clips) resolveOverlap(clip, clip.id);
+    syncUI();
 }
 
 function setBackgroundColor(color: string): void {
@@ -1082,10 +1220,6 @@ function loadProject(file: File): void {
 
             // 設定を復元
             if (data.config) {
-                if (data.config.preventOverlap !== undefined) {
-                    CONFIG.preventOverlap = data.config.preventOverlap;
-                    overlapToggle.checked = CONFIG.preventOverlap;
-                }
                 if (data.config.bgColor) {
                     CONFIG.bgColor = data.config.bgColor;
                     bgColorPicker.value = CONFIG.bgColor;
@@ -1117,6 +1251,8 @@ function loadProject(file: File): void {
             if (data.layerCount) {
                 currentLayerCount = data.layerCount;
             }
+
+            setOverlapPrevention(true);
 
             // UIを更新
             updateTimelineDuration();
@@ -1229,5 +1365,6 @@ initializeEditor({
     updateZoomDisplay,
     syncUI,
 });
+setOverlapPrevention(true);
 
 setupCanvasResize(canvas, drawTimeline);

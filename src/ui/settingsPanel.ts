@@ -1,3 +1,5 @@
+import { setupNumberInput } from './numberInput';
+
 export interface SettingsPanelElements {
     settingsTabs: HTMLDivElement;
     tabProject: HTMLDivElement;
@@ -50,16 +52,18 @@ export function setupSettingsPanel(
         callbacks.setOverlapPrevention(elements.overlapToggle.checked);
     });
 
-    elements.applyLayerCountBtn.addEventListener('click', () => {
-        const count = parseInt(elements.layerCountInput.value, 10);
-        if (!isNaN(count)) callbacks.setLayerCount(count);
+    setupNumberInput(elements.layerCountInput, elements.layerCountInput, {
+        min: 1,
+        max: 99,
+        default: 10,
+        stages: null,
+        getIsDragging: () => false,
+        updateSliderRangeFn: () => undefined,
+        onCommit: callbacks.setLayerCount,
     });
 
-    elements.layerCountInput.addEventListener('keydown', (event) => {
-        if (event.key !== 'Enter') return;
-        event.preventDefault();
-        const count = parseInt(elements.layerCountInput.value, 10);
-        if (!isNaN(count)) callbacks.setLayerCount(count);
+    elements.applyLayerCountBtn.addEventListener('click', () => {
+        elements.layerCountInput.dispatchEvent(new Event('change'));
     });
 
     elements.bgColorPicker.addEventListener('input', () => {

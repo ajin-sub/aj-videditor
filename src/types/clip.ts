@@ -1,4 +1,4 @@
-export type ClipType = 'text' | 'shape' | 'camera';
+export type ClipType = 'text' | 'shape' | 'cameraPosition' | 'cameraOrbit' | 'rotationControl' | 'fovControl';
 export type ShapeType = 'rectangle' | 'triangle' | 'circle' | 'pie' | 'arrow';
 
 export interface Clip {
@@ -11,7 +11,14 @@ export interface Clip {
     y: number;
     z: number;
     rotation: number;
-    cameraRange?: number;
+    rotationX?: number;
+    rotationY?: number;
+    rotationZ?: number;
+    cameraDisabled?: boolean;
+    cameraFov?: number;
+    cameraVerticalAngle?: number;
+    cameraHorizontalAngle?: number;
+    cameraOrbitDistance?: number;
     text?: string;
     fontSize?: number;
     color?: string;

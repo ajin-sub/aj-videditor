@@ -104,6 +104,8 @@ function getClipLabel(clip: Clip): string {
         const shapeName = clip.shapeType || 'shape';
         return '\u00A0\u00A0\u00A0' + shapeName.charAt(0).toUpperCase() + shapeName.slice(1);
     }
-    if (clip.type === 'camera') return '\u00A0\u00A0\u00A0Camera';
-    return '\u00A0\u00A0\u00A0Unknown';
+    if (clip.type === 'cameraPosition') return '\u00A0\u00A0\u00A0Camera Position / Angle';
+    if (clip.type === 'cameraOrbit') return '\u00A0\u00A0\u00A0Camera Orbit';
+    if (clip.type === 'rotationControl') return '\u00A0\u00A0\u00A0Rotation Control';
+    return '\u00A0\u00A0\u00A0FOV Control';
 }

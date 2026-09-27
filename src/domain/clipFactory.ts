@@ -43,9 +43,16 @@ export function createClip(
         };
     }
 
-    return {
-        ...baseClip,
-        type,
-        cameraRange: 10,
-    };
+    if (type === 'cameraPosition') return { ...baseClip, type };
+    if (type === 'cameraOrbit') {
+        return {
+            ...baseClip,
+            type,
+            cameraVerticalAngle: 0,
+            cameraHorizontalAngle: 0,
+            cameraOrbitDistance: 0,
+        };
+    }
+    if (type === 'rotationControl') return { ...baseClip, type };
+    return { ...baseClip, type, cameraFov: 50 };
 }

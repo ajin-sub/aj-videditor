@@ -20,11 +20,14 @@ export const CONFIG = {
     text_wheel_step: 3,
 };
 
-export const CLIP_COLORS = {
+export const CLIP_COLORS: Record<ClipType, string> = {
     text: '#0065d8',
     shape: '#ff0055',
-    camera: '#29f078',
-} as const;
+    cameraPosition: '#29f078',
+    cameraOrbit: '#00b8a9',
+    rotationControl: '#e2a900',
+    fovControl: '#d15ce8',
+};
 
 export function getClipColor(type: ClipType): string {
     return CLIP_COLORS[type] || '#888888';

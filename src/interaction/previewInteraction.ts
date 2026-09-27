@@ -9,8 +9,10 @@ export interface PreviewInteractionOptions {
     width: number;
     height: number;
     defaultFont: string;
+    pickClip?: (clientX: number, clientY: number) => Clip | null;
+    getClipPosition?: (clientX: number, clientY: number, clip: Clip) => { x: number; y: number } | null;
     onSelect: (clip: Clip) => void;
-    onMove: (clip: Clip, x: number, y: number) => void;
+    onMove: (clip: Clip, x: number, y: number, deltaX: number, deltaY: number) => void;
     onDragEnd: (clip: Clip | null) => void;
     onRender: () => void;
 }
@@ -104,24 +106,28 @@ export function setupPreviewDrag(options: PreviewInteractionOptions): void {
     let clipStartY = 0;
 
     const onPointerDown = (event: MouseEvent) => {
+        if (event.button !== 0) return;
         const position = getCanvasCoords(options.canvas, event);
-        const clip = getClipAtPosition(
-            options.ctx,
-            options.clips,
-            options.getCurrentFrame(),
-            position.x,
-            position.y,
-            options.width,
-            options.height,
-            options.defaultFont
-        );
+        const clip = options.pickClip
+            ? options.pickClip(event.clientX, event.clientY)
+            : getClipAtPosition(
+                options.ctx,
+                options.clips,
+                options.getCurrentFrame(),
+                position.x,
+                position.y,
+                options.width,
+                options.height,
+                options.defaultFont
+            );
         if (!clip) return;
 
         options.onSelect(clip);
         isPointerDown = true;
         pointerDownClip = clip;
-        pointerStartX = position.x;
-        pointerStartY = position.y;
+        const clipPosition = options.getClipPosition?.(event.clientX, event.clientY, clip);
+        pointerStartX = clip.type === 'cameraOrbit' ? event.clientX : clipPosition?.x ?? position.x;
+        pointerStartY = clip.type === 'cameraOrbit' ? event.clientY : clipPosition?.y ?? position.y;
         clipStartX = clip.x;
         clipStartY = clip.y;
         options.canvas.style.cursor = 'grabbing';
@@ -131,14 +137,18 @@ export function setupPreviewDrag(options: PreviewInteractionOptions): void {
 
     const onPointerMove = (event: MouseEvent) => {
         if (!isPointerDown || !pointerDownClip) return;
-        const position = getCanvasCoords(options.canvas, event);
-        if (Math.abs(position.x - pointerStartX) < 3 && Math.abs(position.y - pointerStartY) < 3) return;
+        const clipPosition = pointerDownClip.type === 'cameraOrbit'
+            ? { x: event.clientX, y: event.clientY }
+            : options.getClipPosition?.(event.clientX, event.clientY, pointerDownClip);
+        if (options.getClipPosition && !clipPosition) return;
+        const position = clipPosition ?? getCanvasCoords(options.canvas, event);
+        if (Math.abs(position.x - pointerStartX) < 0.5 && Math.abs(position.y - pointerStartY) < 0.5) return;
 
-        const newX = Math.round(clipStartX + position.x - pointerStartX);
-        const newY = Math.round(clipStartY + position.y - pointerStartY);
-        pointerDownClip.x = newX;
-        pointerDownClip.y = newY;
-        options.onMove(pointerDownClip, newX, newY);
+        const deltaX = position.x - pointerStartX;
+        const deltaY = position.y - pointerStartY;
+        const newX = Math.round(clipStartX + deltaX);
+        const newY = Math.round(clipStartY + deltaY);
+        options.onMove(pointerDownClip, newX, newY, deltaX, deltaY);
         options.onRender();
     };
 
