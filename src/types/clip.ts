@@ -1,4 +1,4 @@
-export type ClipType = 'text' | 'shape' | 'cameraPosition' | 'cameraOrbit' | 'rotationControl' | 'fovControl';
+export type ClipType = 'text' | 'shape' | 'image' | 'audio' | 'media' | 'cameraPosition' | 'cameraOrbit' | 'rotationControl' | 'fovControl';
 export type ShapeType = 'rectangle' | 'triangle' | 'circle' | 'pie' | 'arrow';
 
 export interface Clip {
@@ -29,4 +29,10 @@ export interface Clip {
     strokeWidth?: number;
     width?: number;
     height?: number;
+    mediaId?: string;
+    mediaName?: string;
+    mediaType?: string;
+    fileName?: string;
+    src?: string;
+    volume?: number;
 }

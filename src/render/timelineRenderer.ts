@@ -15,6 +15,7 @@ export interface TimelineRenderOptions {
     timelinePaddingRight: number;
     draggingClipId: string | null;
     isDraggingClip: boolean;
+    hiddenLayers: Set<number>;
     getClipColor: (type: ClipType) => string;
 }
 
@@ -34,6 +35,7 @@ export function renderTimeline(options: TimelineRenderOptions): string {
         timelinePaddingRight,
         draggingClipId,
         isDraggingClip,
+        hiddenLayers,
         getClipColor,
     } = options;
     let html = '';
@@ -57,8 +59,9 @@ export function renderTimeline(options: TimelineRenderOptions): string {
 
     for (let layerId = 1; layerId <= currentLayerCount; layerId++) {
         const layerLabel = String(layerId).padStart(2, '0');
-        html += `<div class="timeline-track" style="height:${timelineHeight}px; width:${totalWidth}px; min-width:100%;">`;
-        html += `<div class="timeline-track-label">LAYER ${layerLabel}</div>`;
+        const isHidden = hiddenLayers.has(layerId);
+        html += `<div class="timeline-track ${isHidden ? 'layer-hidden' : ''}" style="height:${timelineHeight}px; width:${totalWidth}px; min-width:100%;">`;
+        html += `<div class="timeline-track-label" data-layer-id="${layerId}" style="cursor:pointer;">LAYER ${layerLabel}</div>`;
         html += `<div class="timeline-track-area" style="position:relative; flex:1; height:100%;">`;
 
         for (const clip of clips.filter(item => item.layerId === layerId)) {
@@ -104,8 +107,21 @@ function getClipLabel(clip: Clip): string {
         const shapeName = clip.shapeType || 'shape';
         return '\u00A0\u00A0\u00A0' + shapeName.charAt(0).toUpperCase() + shapeName.slice(1);
     }
+    if (clip.type === 'image') return '\u00A0\u00A0\u00A0' + escapeHtml(clip.fileName || clip.mediaName || 'Image');
+    if (clip.type === 'audio') return '\u00A0\u00A0\u00A0' + escapeHtml(clip.mediaName || 'Audio');
+    if (clip.type === 'media') return '\u00A0\u00A0\u00A0' + escapeHtml(clip.mediaName || 'Media');
     if (clip.type === 'cameraPosition') return '\u00A0\u00A0\u00A0Camera Position / Angle';
     if (clip.type === 'cameraOrbit') return '\u00A0\u00A0\u00A0Camera Orbit';
     if (clip.type === 'rotationControl') return '\u00A0\u00A0\u00A0Rotation Control';
     return '\u00A0\u00A0\u00A0FOV Control';
+}
+
+function escapeHtml(value: string): string {
+    return value.replace(/[&<>"']/g, character => ({
+        '&': '&amp;',
+        '<': '&lt;',
+        '>': '&gt;',
+        '"': '&quot;',
+        "'": '&#39;',
+    })[character] || character);
 }

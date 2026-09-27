@@ -9,22 +9,21 @@ export interface PlaybackOptions {
     getCurrentFrame: () => number;
     setCurrentFrame: (frame: number) => void;
     getTimelineDuration: () => number;
-    getFps: () => number;
     onPlayingStateChange: (isPlaying: boolean) => void;
     onFrameChange: () => void;
 }
 
 export function createPlaybackController(options: PlaybackOptions): PlaybackController {
     let isPlaying = false;
-    let playInterval: number | null = null;
+    let playbackRafId: number | null = null;
 
     const stop = (): void => {
         isPlaying = false;
-        options.onPlayingStateChange(false);
-        if (playInterval !== null) {
-            clearInterval(playInterval);
-            playInterval = null;
+        if (playbackRafId !== null) {
+            cancelAnimationFrame(playbackRafId);
+            playbackRafId = null;
         }
+        options.onPlayingStateChange(false);
     };
 
     const start = (): void => {
@@ -35,18 +34,15 @@ export function createPlaybackController(options: PlaybackOptions): PlaybackCont
 
         isPlaying = true;
         options.onPlayingStateChange(true);
-        playInterval = window.setInterval(() => {
-            const nextFrame = options.getCurrentFrame() + 1;
-            if (nextFrame >= options.getTimelineDuration()) {
-                options.setCurrentFrame(options.getTimelineDuration());
-                stop();
-                options.onFrameChange();
+        const loop = (): void => {
+            if (!isPlaying) {
+                playbackRafId = null;
                 return;
             }
-
-            options.setCurrentFrame(nextFrame);
             options.onFrameChange();
-        }, 1000 / options.getFps());
+            playbackRafId = requestAnimationFrame(loop);
+        };
+        playbackRafId = requestAnimationFrame(loop);
     };
 
     return {

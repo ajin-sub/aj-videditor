@@ -200,6 +200,12 @@ function createClip(type, id, layerId, startFrame, duration, defaultFont) {
       height: 100
     };
   }
+  if (type === "image")
+    return { ...baseClip, type, width: 100, height: 100 };
+  if (type === "audio")
+    return { ...baseClip, type, volume: 1 };
+  if (type === "media")
+    return { ...baseClip, type };
   if (type === "cameraPosition")
     return { ...baseClip, type };
   if (type === "cameraOrbit") {
@@ -17497,6 +17503,78 @@ var VectorKeyframeTrack = class extends KeyframeTrack {
   }
 };
 VectorKeyframeTrack.prototype.ValueTypeName = "vector";
+var Cache = {
+  /**
+   * Whether caching is enabled or not.
+   *
+   * @static
+   * @type {boolean}
+   * @default false
+   */
+  enabled: false,
+  /**
+   * A dictionary that holds cached files.
+   *
+   * @static
+   * @type {Object<string,Object>}
+   */
+  files: {},
+  /**
+   * Adds a cache entry with a key to reference the file. If this key already
+   * holds a file, it is overwritten.
+   *
+   * @static
+   * @param {string} key - The key to reference the cached file.
+   * @param {Object} file -  The file to be cached.
+   */
+  add: function(key, file) {
+    if (this.enabled === false)
+      return;
+    if (isBlobURL(key))
+      return;
+    this.files[key] = file;
+  },
+  /**
+   * Gets the cached value for the given key.
+   *
+   * @static
+   * @param {string} key - The key to reference the cached file.
+   * @return {Object|undefined} The cached file. If the key does not exist `undefined` is returned.
+   */
+  get: function(key) {
+    if (this.enabled === false)
+      return;
+    if (isBlobURL(key))
+      return;
+    return this.files[key];
+  },
+  /**
+   * Removes the cached file associated with the given key.
+   *
+   * @static
+   * @param {string} key - The key to reference the cached file.
+   */
+  remove: function(key) {
+    delete this.files[key];
+  },
+  /**
+   * Remove all values from the cache.
+   *
+   * @static
+   */
+  clear: function() {
+    this.files = {};
+  }
+};
+function isBlobURL(key) {
+  try {
+    const urlString = key.slice(key.indexOf(":") + 1);
+    const url = new URL(urlString);
+    return url.protocol === "blob:";
+  } catch (e) {
+    return false;
+  }
+}
 var LoadingManager = class {
   /**
    * Constructs a new loading manager.
@@ -17715,6 +17793,133 @@ var Loader = class {
   }
 };
 Loader.DEFAULT_MATERIAL_NAME = "__DEFAULT";
+var _loading = /* @__PURE__ */ new WeakMap();
+var ImageLoader = class extends Loader {
+  /**
+   * Constructs a new image loader.
+   *
+   * @param {LoadingManager} [manager] - The loading manager.
+   */
+  constructor(manager) {
+    super(manager);
+  }
+  /**
+   * Starts loading from the given URL and passes the loaded image
+   * to the `onLoad()` callback. The method also returns a new `Image` object which can
+   * directly be used for texture creation. If you do it this way, the texture
+   * may pop up in your scene once the respective loading process is finished.
+   *
+   * @param {string} url - The path/URL of the file to be loaded. This can also be a data URI.
+   * @param {function(Image)} onLoad - Executed when the loading process has been finished.
+   * @param {onProgressCallback} onProgress - Unsupported in this loader.
+   * @param {onErrorCallback} onError - Executed when errors occur.
+   * @return {Image} The image.
+   */
+  load(url, onLoad, onProgress, onError) {
+    if (this.path !== void 0)
+      url = this.path + url;
+    url = this.manager.resolveURL(url);
+    const scope = this;
+    const cached = Cache.get(`image:${url}`);
+    if (cached !== void 0) {
+      if (cached.complete === true) {
+        scope.manager.itemStart(url);
+        setTimeout(function() {
+          if (onLoad)
+            onLoad(cached);
+          scope.manager.itemEnd(url);
+        }, 0);
+      } else {
+        let arr = _loading.get(cached);
+        if (arr === void 0) {
+          arr = [];
+          _loading.set(cached, arr);
+        }
+        arr.push({ onLoad, onError });
+      }
+      return cached;
+    }
+    const image = createElementNS("img");
+    function onImageLoad() {
+      removeEventListeners();
+      if (onLoad)
+        onLoad(this);
+      const callbacks = _loading.get(this) || [];
+      for (let i = 0; i < callbacks.length; i++) {
+        const callback = callbacks[i];
+        if (callback.onLoad)
+          callback.onLoad(this);
+      }
+      _loading.delete(this);
+      scope.manager.itemEnd(url);
+    }
+    function onImageError(event) {
+      removeEventListeners();
+      if (onError)
+        onError(event);
+      Cache.remove(`image:${url}`);
+      const callbacks = _loading.get(this) || [];
+      for (let i = 0; i < callbacks.length; i++) {
+        const callback = callbacks[i];
+        if (callback.onError)
+          callback.onError(event);
+      }
+      _loading.delete(this);
+      scope.manager.itemError(url);
+      scope.manager.itemEnd(url);
+    }
+    function removeEventListeners() {
+      image.removeEventListener("load", onImageLoad, false);
+      image.removeEventListener("error", onImageError, false);
+    }
+    image.addEventListener("load", onImageLoad, false);
+    image.addEventListener("error", onImageError, false);
+    if (url.slice(0, 5) !== "data:") {
+      if (this.crossOrigin !== void 0)
+        image.crossOrigin = this.crossOrigin;
+    }
+    Cache.add(`image:${url}`, image);
+    scope.manager.itemStart(url);
+    image.src = url;
+    return image;
+  }
+};
+var TextureLoader = class extends Loader {
+  /**
+   * Constructs a new texture loader.
+   *
+   * @param {LoadingManager} [manager] - The loading manager.
+   */
+  constructor(manager) {
+    super(manager);
+  }
+  /**
+   * Starts loading from the given URL and pass the fully loaded texture
+   * to the `onLoad()` callback. The method also returns a new texture object which can
+   * directly be used for material creation. If you do it this way, the texture
+   * may pop up in your scene once the respective loading process is finished.
+   *
+   * @param {string} url - The path/URL of the file to be loaded. This can also be a data URI.
+   * @param {function(Texture)} onLoad - Executed when the loading process has been finished.
+   * @param {onProgressCallback} onProgress - Unsupported in this loader.
+   * @param {onErrorCallback} onError - Executed when errors occur.
+   * @return {Texture} The texture.
+   */
+  load(url, onLoad, onProgress, onError) {
+    const texture = new Texture();
+    const loader = new ImageLoader(this.manager);
+    loader.setCrossOrigin(this.crossOrigin);
+    loader.setPath(this.path);
+    loader.load(url, function(image) {
+      texture.image = image;
+      texture.needsUpdate = true;
+      if (onLoad !== void 0) {
+        onLoad(texture);
+      }
+    }, onProgress, onError);
+    return texture;
+  }
+};
 var _position$2 = /* @__PURE__ */ new Vector3();
 var _quaternion$2 = /* @__PURE__ */ new Quaternion();
 var _scale$2 = /* @__PURE__ */ new Vector3();
@@ -30911,10 +31116,13 @@ var ThreePreviewRenderer = class {
     this.setGridSize();
     this.setDefaultCamera();
   }
-  render(clips2, frame, selectedId2, backgroundColor) {
+  render(clips2, frame, selectedId2, backgroundColor, hiddenLayers2 = /* @__PURE__ */ new Set()) {
     this.scene.background = new Color(backgroundColor);
     const visibleIds = /* @__PURE__ */ new Set();
     for (const clip of clips2) {
+      if (hiddenLayers2.has(clip.layerId)) {
+        continue;
+      }
       if (!isVisualClip(clip) || frame < clip.startFrame || frame >= clip.startFrame + clip.duration) {
         continue;
       }
@@ -30941,7 +31149,7 @@ var ThreePreviewRenderer = class {
         this.cameraExemptScene.remove(mesh);
       }
     }
-    this.updateCamera(clips2, frame);
+    this.updateCamera(clips2, frame, hiddenLayers2);
     this.updateCameraHandle(clips2, frame, selectedId2);
     const selectedMesh = selectedId2 ? this.meshes.get(selectedId2) : void 0;
     const selectedExempt = Boolean(selectedMesh?.visible && clips2.find((clip) => clip.id === selectedId2)?.cameraDisabled);
@@ -30961,7 +31169,7 @@ var ThreePreviewRenderer = class {
     this.renderer.clearDepth();
     this.renderer.render(this.cameraHandleScene, this.defaultCamera);
     this.renderer.autoClear = previousAutoClear;
-    this.updateCamera(clips2, frame);
+    this.updateCamera(clips2, frame, hiddenLayers2);
   }
   resize(width, height) {
     if (this.width === width && this.height === height)
@@ -30975,8 +31183,15 @@ var ThreePreviewRenderer = class {
     this.renderer.setSize(width, height, false);
     this.setGridSize();
   }
-  pick(clientX, clientY, selectedId2) {
+  pick(clientX, clientY) {
     this.setPointer(clientX, clientY);
+    this.raycaster.setFromCamera(this.pointer, this.defaultCamera);
+    const cameraHit = this.raycaster.intersectObjects(
+      [...this.cameraHandles.values()].filter((handle) => handle.visible),
+      false
+    )[0];
+    if (cameraHit)
+      return cameraHit.object.userData.clipId;
     this.raycaster.setFromCamera(this.pointer, this.camera);
     const regularHits = this.raycaster.intersectObjects(
       [...this.meshes.values()].filter((mesh) => mesh.visible && mesh.parent === this.scene),
@@ -30988,14 +31203,7 @@ var ThreePreviewRenderer = class {
       false
     ).sort((a, b) => a.distance - b.distance || b.object.renderOrder - a.object.renderOrder);
     const hit = exemptHits[0] || regularHits[0];
-    if (hit)
-      return hit.object.userData.clipId;
-    const selectedHandle = selectedId2 ? this.cameraHandles.get(selectedId2) : void 0;
-    if (!selectedHandle?.visible)
-      return null;
-    this.raycaster.setFromCamera(this.pointer, this.defaultCamera);
-    const cameraHit = this.raycaster.intersectObject(selectedHandle, false)[0];
-    return cameraHit?.object.userData.clipId ?? null;
+    return hit?.object.userData.clipId ?? null;
   }
   pointerToClipPosition(clientX, clientY, clip) {
     this.setPointer(clientX, clientY);
@@ -31012,8 +31220,8 @@ var ThreePreviewRenderer = class {
     clip.cameraHorizontalAngle = (clip.cameraHorizontalAngle || 0) - deltaX * 0.25;
     clip.cameraVerticalAngle = MathUtils.clamp(
       (clip.cameraVerticalAngle || 0) + deltaY * 0.25,
-      -89,
-      89
+      -1440,
+      1440
     );
   }
   dispose() {
@@ -31035,16 +31243,33 @@ var ThreePreviewRenderer = class {
       clip.text,
       clip.fontSize,
       clip.fontFamily,
-      clip.color
+      clip.color,
+      clip.src
     ]);
     if (this.signatures.get(clip.id) === signature)
       return;
     const previous = this.meshes.get(clip.id);
+    let reusableTexture;
     if (previous) {
       this.scene.remove(previous);
+      if (isImageClip(clip) && previous.userData.isImageMesh && previous.userData.mediaSrc === clip.src) {
+        const previousMaterial = previous.material;
+        reusableTexture = previousMaterial.map || void 0;
+        previousMaterial.map = null;
+      }
       this.disposeMesh(previous);
     }
-    const mesh = clip.type === "text" ? this.createTextMesh(clip) : this.createShapeMesh(clip);
+    let mesh;
+    if (clip.type === "text")
+      mesh = this.createTextMesh(clip);
+    else if (clip.type === "image" || clip.type === "media" && clip.mediaType?.startsWith("image/")) {
+      mesh = this.createImageMesh(clip, reusableTexture);
+    } else
+      mesh = this.createShapeMesh(clip);
+    if (isImageClip(clip)) {
+      mesh.userData.isImageMesh = true;
+      mesh.userData.mediaSrc = clip.src;
+    }
     mesh.userData.clipId = clip.id;
     this.meshes.set(clip.id, mesh);
     this.signatures.set(clip.id, signature);
@@ -31073,6 +31298,34 @@ var ThreePreviewRenderer = class {
       const edges = new LineSegments(edgeGeometry, edgeMaterial);
       edges.renderOrder = clip.layerId;
       mesh.add(edges);
+    }
+    return mesh;
+  }
+  createImageMesh(clip, reusableTexture) {
+    const material = new MeshBasicMaterial({
+      color: clip.src ? "#ffffff" : "#888888",
+      side: DoubleSide,
+      depthWrite: true,
+      depthFunc: LessEqualDepth,
+      alphaTest: 0.5,
+      map: reusableTexture || null
+    });
+    const mesh = new Mesh(
+      new PlaneGeometry(clip.width || 100, clip.height || 100),
+      material
+    );
+    if (clip.src && !reusableTexture) {
+      const texture = new TextureLoader().load(clip.src, () => {
+        const currentMaterial = this.meshes.get(clip.id)?.material;
+        if (currentMaterial?.map !== texture) {
+          texture.dispose();
+          return;
+        }
+        currentMaterial.needsUpdate = true;
+        this.renderer.render(this.scene, this.camera);
+      });
+      texture.colorSpace = SRGBColorSpace;
+      material.map = texture;
     }
     return mesh;
   }
@@ -31108,8 +31361,12 @@ var ThreePreviewRenderer = class {
     });
     return new Mesh(new PlaneGeometry(textureCanvas.width, textureCanvas.height), material);
   }
-  updateCamera(clips2, frame) {
-    const active = clips2.filter((clip) => frame >= clip.startFrame && frame < clip.startFrame + clip.duration).sort((a, b) => a.layerId - b.layerId);
+  updateCamera(clips2, frame, hiddenLayers2) {
+    const active = clips2.filter((clip) => {
+      if (hiddenLayers2.has(clip.layerId))
+        return false;
+      return frame >= clip.startFrame && frame < clip.startFrame + clip.duration;
+    }).sort((a, b) => a.layerId - b.layerId);
     const positionCameras = active.filter((clip) => clip.type === "cameraPosition");
     const orbitCameras = active.filter((clip) => clip.type === "cameraOrbit");
     const positionLayer = positionCameras[positionCameras.length - 1]?.layerId ?? -1;
@@ -31142,14 +31399,25 @@ var ThreePreviewRenderer = class {
         distance: sum.distance + (clip.cameraOrbitDistance || 0)
       }), { vertical: 0, horizontal: 0, distance: 0 });
       const controls = active.filter((clip) => clip.type === "rotationControl");
-      const control = controls[controls.length - 1];
-      const centerX = control?.x || 0;
-      const centerY = control?.y || 0;
-      const centerZ = control?.z || 0;
+      const center = controls.reduce((sum, clip) => ({
+        x: sum.x + clip.x,
+        y: sum.y + clip.y,
+        z: sum.z + clip.z
+      }), { x: 0, y: 0, z: 0 });
+      const centerX = center.x;
+      const centerY = center.y;
+      const centerZ = center.z;
       const radius = Math.max(1, this.defaultCameraDistance() + orbit.distance);
-      const vertical = MathUtils.degToRad(MathUtils.clamp(orbit.vertical, -89, 89));
+      const verticalAngle = MathUtils.clamp(orbit.vertical, -1440, 1440);
+      const vertical = MathUtils.degToRad(verticalAngle);
       const horizontal = MathUtils.degToRad(orbit.horizontal);
       const horizontalRadius = radius * Math.cos(vertical);
+      const wrappedVertical = (verticalAngle % 360 + 360) % 360;
+      this.camera.up.set(
+        0,
+        wrappedVertical > 90 && wrappedVertical < 270 ? -1 : 1,
+        0
+      );
       this.camera.position.set(
         centerX + horizontalRadius * Math.sin(horizontal),
         -(centerY + radius * Math.sin(vertical)),
@@ -31181,15 +31449,7 @@ var ThreePreviewRenderer = class {
       this.cameraHandles.set(selected.id, handle);
       this.cameraHandleScene.add(handle);
     }
-    const baseline = this.defaultCameraDistance();
-    if (selected.type === "cameraPosition") {
-      handle.position.set(selected.x, -selected.y, selected.z);
-    } else {
-      const active = clips2.filter((clip) => frame >= clip.startFrame && frame < clip.startFrame + clip.duration);
-      const controls = active.filter((clip) => clip.type === "rotationControl").sort((a, b) => a.layerId - b.layerId);
-      const center = controls[controls.length - 1];
-      handle.position.set(center?.x || 0, -(center?.y || 0), center?.z || 0);
-    }
+    handle.position.set(0, 0, 0);
     handle.visible = true;
   }
   setPointer(clientX, clientY) {
@@ -31252,7 +31512,10 @@ var ThreePreviewRenderer = class {
   }
 };
 function isVisualClip(clip) {
-  return clip.type === "text" || clip.type === "shape";
+  return clip.type === "text" || clip.type === "shape" || clip.type === "image" || clip.type === "media" && Boolean(clip.mediaType?.startsWith("image/"));
+}
+function isImageClip(clip) {
+  return clip.type === "image" || clip.type === "media" && Boolean(clip.mediaType?.startsWith("image/"));
 }
 function createShapeGeometry(clip, width, height) {
   if (clip.shapeType === "circle")
@@ -31305,6 +31568,7 @@ function renderTimeline(options) {
     timelinePaddingRight,
     draggingClipId,
     isDraggingClip,
+    hiddenLayers: hiddenLayers2,
     getClipColor: getClipColor2
   } = options;
   let html = "";
@@ -31326,8 +31590,9 @@ function renderTimeline(options) {
   html += `<div class="timeline-playhead-dot" style="position:absolute; top:-6px; left:${headX - 4}px; width:10px; height:10px; background:var(--accent); border-radius:50%; z-index:11; pointer-events:none;"></div>`;
   for (let layerId = 1; layerId <= currentLayerCount2; layerId++) {
     const layerLabel = String(layerId).padStart(2, "0");
-    html += `<div class="timeline-track" style="height:${timelineHeight}px; width:${totalWidth}px; min-width:100%;">`;
-    html += `<div class="timeline-track-label">LAYER ${layerLabel}</div>`;
+    const isHidden = hiddenLayers2.has(layerId);
+    html += `<div class="timeline-track ${isHidden ? "layer-hidden" : ""}" style="height:${timelineHeight}px; width:${totalWidth}px; min-width:100%;">`;
+    html += `<div class="timeline-track-label" data-layer-id="${layerId}" style="cursor:pointer;">LAYER ${layerLabel}</div>`;
     html += `<div class="timeline-track-area" style="position:relative; flex:1; height:100%;">`;
     for (const clip of clips2.filter((item) => item.layerId === layerId)) {
       const left = clip.startFrame / fps * pixelsPerSecond;
@@ -31368,6 +31633,12 @@ function getClipLabel(clip) {
     const shapeName = clip.shapeType || "shape";
     return "\xA0\xA0\xA0" + shapeName.charAt(0).toUpperCase() + shapeName.slice(1);
   }
+  if (clip.type === "image")
+    return "\xA0\xA0\xA0" + escapeHtml(clip.fileName || clip.mediaName || "Image");
+  if (clip.type === "audio")
+    return "\xA0\xA0\xA0" + escapeHtml(clip.mediaName || "Audio");
+  if (clip.type === "media")
+    return "\xA0\xA0\xA0" + escapeHtml(clip.mediaName || "Media");
   if (clip.type === "cameraPosition")
     return "\xA0\xA0\xA0Camera Position / Angle";
   if (clip.type === "cameraOrbit")
@@ -31376,18 +31647,27 @@ function getClipLabel(clip) {
     return "\xA0\xA0\xA0Rotation Control";
   return "\xA0\xA0\xA0FOV Control";
 }
+function escapeHtml(value) {
+  return value.replace(/[&<>"']/g, (character) => ({
+    "&": "&amp;",
+    "<": "&lt;",
+    ">": "&gt;",
+    '"': "&quot;",
+    "'": "&#39;"
+  })[character] || character);
+}
 
 // src/interaction/playback.ts
 function createPlaybackController(options) {
   let isPlaying = false;
-  let playInterval = null;
+  let playbackRafId2 = null;
   const stop = () => {
     isPlaying = false;
-    options.onPlayingStateChange(false);
-    if (playInterval !== null) {
-      clearInterval(playInterval);
-      playInterval = null;
+    if (playbackRafId2 !== null) {
+      cancelAnimationFrame(playbackRafId2);
+      playbackRafId2 = null;
     }
+    options.onPlayingStateChange(false);
   };
   const start = () => {
     if (isPlaying)
@@ -31397,17 +31677,15 @@ function createPlaybackController(options) {
     }
     isPlaying = true;
     options.onPlayingStateChange(true);
-    playInterval = window.setInterval(() => {
-      const nextFrame = options.getCurrentFrame() + 1;
-      if (nextFrame >= options.getTimelineDuration()) {
-        options.setCurrentFrame(options.getTimelineDuration());
-        stop();
-        options.onFrameChange();
+    const loop = () => {
+      if (!isPlaying) {
+        playbackRafId2 = null;
         return;
       }
-      options.setCurrentFrame(nextFrame);
       options.onFrameChange();
-    }, 1e3 / options.getFps());
+      playbackRafId2 = requestAnimationFrame(loop);
+    };
+    playbackRafId2 = requestAnimationFrame(loop);
   };
   return {
     get isPlaying() {
@@ -32047,6 +32325,9 @@ var CONFIG = {
 var CLIP_COLORS = {
   text: "#0065d8",
   shape: "#ff0055",
+  image: "#16a085",
+  audio: "#f0a128",
+  media: "#16a085",
   cameraPosition: "#29f078",
   cameraOrbit: "#00b8a9",
   rotationControl: "#e2a900",
@@ -32078,6 +32359,8 @@ function setPropertyInputsEnabled(enabled, inputs, startInput2, durationInput2) 
     inputs.strokeWidthSlider,
     inputs.shapeWidthSlider,
     inputs.shapeHeightSlider,
+    inputs.audioVolumeSlider,
+    inputs.audioVolumeNumber,
     inputs.xSlider,
     inputs.xNumber,
     inputs.ySlider,
@@ -32108,7 +32391,7 @@ function setPropertyInputsEnabled(enabled, inputs, startInput2, durationInput2) 
 function syncPropertyPanel(options) {
   const { selected, inputs } = options;
   if (selected && options.hasClips) {
-    options.typeDisplay.textContent = selected.type === "text" ? "\u30C6\u30AD\u30B9\u30C8" : selected.type === "shape" ? "\u56F3\u5F62" : selected.type === "cameraPosition" ? "\u30AB\u30E1\u30E9 - \u4F4D\u7F6E\u30FB\u89D2\u5EA6" : selected.type === "cameraOrbit" ? "\u30AB\u30E1\u30E9 - \u56DE\u308A\u8FBC\u307F" : selected.type === "rotationControl" ? "\u56DE\u8EE2\u5236\u5FA1" : selected.type === "fovControl" ? "\u8996\u91CE\u5236\u5FA1" : "-";
+    options.typeDisplay.textContent = selected.type === "text" ? "\u30C6\u30AD\u30B9\u30C8" : selected.type === "shape" ? "\u56F3\u5F62" : selected.type === "image" ? `\u753B\u50CF: ${selected.fileName || selected.mediaName || ""}` : selected.type === "audio" ? `\u97F3\u58F0: ${selected.mediaName || ""}` : selected.type === "media" ? `\u30E1\u30C7\u30A3\u30A2: ${selected.mediaName || ""}` : selected.type === "cameraPosition" ? "\u30AB\u30E1\u30E9 - \u4F4D\u7F6E\u30FB\u89D2\u5EA6" : selected.type === "cameraOrbit" ? "\u30AB\u30E1\u30E9 - \u56DE\u308A\u8FBC\u307F" : selected.type === "rotationControl" ? "\u56DE\u8EE2\u5236\u5FA1" : selected.type === "fovControl" ? "\u8996\u91CE\u5236\u5FA1" : "-";
     if (selected.type === "text") {
       options.textProperties.style.display = "";
       options.shapeProperties.style.display = "none";
@@ -32120,6 +32403,7 @@ function syncPropertyPanel(options) {
     } else if (selected.type === "shape") {
       options.textProperties.style.display = "none";
       options.shapeProperties.style.display = "";
+      setShapeOnlyControlsVisible(options.shapeProperties, true);
       inputs.shapeTypeSelect.value = selected.shapeType || "rectangle";
       inputs.fillColorPicker.value = selected.fillColor || "#ffffff";
       inputs.strokeColorPicker.value = !selected.strokeColor || selected.strokeColor === "transparent" ? "#000000" : selected.strokeColor;
@@ -32129,11 +32413,26 @@ function syncPropertyPanel(options) {
       inputs.shapeWidthNumber.value = String(selected.width || 100);
       inputs.shapeHeightSlider.value = String(selected.height || 100);
       inputs.shapeHeightNumber.value = String(selected.height || 100);
+    } else if (selected.type === "image") {
+      options.textProperties.style.display = "none";
+      options.shapeProperties.style.display = "";
+      setShapeOnlyControlsVisible(options.shapeProperties, false);
+      inputs.shapeWidthSlider.value = String(selected.width || 100);
+      inputs.shapeWidthNumber.value = String(selected.width || 100);
+      inputs.shapeHeightSlider.value = String(selected.height || 100);
+      inputs.shapeHeightNumber.value = String(selected.height || 100);
     } else {
       options.textProperties.style.display = "none";
       options.shapeProperties.style.display = "none";
     }
     options.cameraProperties.style.display = selected.type === "cameraPosition" || selected.type === "cameraOrbit" || selected.type === "rotationControl" || selected.type === "fovControl" ? "" : "none";
+    const audioProperties = document.getElementById("audioProperties");
+    if (audioProperties)
+      audioProperties.style.display = selected.type === "audio" ? "" : "none";
+    if (selected.type === "audio") {
+      inputs.audioVolumeSlider.value = String(selected.volume ?? 1);
+      inputs.audioVolumeNumber.value = String(selected.volume ?? 1);
+    }
     inputs.xSlider.value = String(selected.x);
     inputs.ySlider.value = String(selected.y);
     inputs.zSlider.value = String(selected.z);
@@ -32166,6 +32465,9 @@ function syncPropertyPanel(options) {
     options.textProperties.style.display = "none";
     options.shapeProperties.style.display = "none";
     options.cameraProperties.style.display = "none";
+    const audioProperties = document.getElementById("audioProperties");
+    if (audioProperties)
+      audioProperties.style.display = "none";
     inputs.textInput.value = "";
     inputs.fontSelect.value = options.defaultFont;
     inputs.xNumber.value = "";
@@ -32196,8 +32498,17 @@ function updateSelectedClip(selected, inputs, onRender) {
     inputs.strokeWidthNumber.value = String(selected.strokeWidth);
     inputs.shapeWidthNumber.value = String(selected.width);
     inputs.shapeHeightNumber.value = String(selected.height);
+  } else if (selected.type === "image") {
+    selected.width = parseFloat(inputs.shapeWidthSlider.value) || 100;
+    selected.height = parseFloat(inputs.shapeHeightSlider.value) || 100;
+    inputs.shapeWidthNumber.value = String(selected.width);
+    inputs.shapeHeightNumber.value = String(selected.height);
+  } else if (selected.type === "audio") {
+    selected.volume = Math.max(0, Math.min(1, parseFloat(inputs.audioVolumeSlider.value) || 0));
+    inputs.audioVolumeSlider.value = String(selected.volume);
+    inputs.audioVolumeNumber.value = String(selected.volume);
   }
-  const positionEditable = selected.type === "text" || selected.type === "shape" || selected.type === "cameraPosition" || selected.type === "rotationControl";
+  const positionEditable = selected.type === "text" || selected.type === "shape" || selected.type === "image" || selected.type === "cameraPosition" || selected.type === "rotationControl";
   if (positionEditable) {
     selected.x = parseFloat(inputs.xSlider.value) || 0;
     selected.y = parseFloat(inputs.ySlider.value) || 0;
@@ -32206,7 +32517,7 @@ function updateSelectedClip(selected, inputs, onRender) {
     inputs.yNumber.value = String(selected.y);
     inputs.zNumber.value = String(selected.z);
   }
-  const rotationEditable = selected.type === "text" || selected.type === "shape" || selected.type === "cameraPosition";
+  const rotationEditable = selected.type === "text" || selected.type === "shape" || selected.type === "image" || selected.type === "cameraPosition";
   if (rotationEditable) {
     selected.rotation = parseFloat(inputs.rotationSlider.value) || 0;
     selected.rotationX = parseFloat(inputs.rotationXSlider.value) || 0;
@@ -32218,6 +32529,14 @@ function updateSelectedClip(selected, inputs, onRender) {
   inputs.textInput.style.height = "auto";
   inputs.textInput.style.height = `${Math.min(inputs.textInput.scrollHeight, 120)}px`;
   onRender();
+}
+function setShapeOnlyControlsVisible(container, visible) {
+  const shapeOnlyLabels = /* @__PURE__ */ new Set(["Shape", "Fill", "Stroke", "Stroke W"]);
+  container.querySelectorAll(".control-group").forEach((group) => {
+    const label = group.querySelector("label")?.textContent?.trim() || "";
+    if (shapeOnlyLabels.has(label))
+      group.style.display = visible ? "" : "none";
+  });
 }
 function setupPropertySliderDrags(options) {
   setupSliderDrag(options.xSlider, () => options.setDragging("x", true), () => {
@@ -32265,6 +32584,22 @@ function setupPropertySliderDrags(options) {
       }
     });
   }
+  setupSliderDrag(options.cameraVerticalAngleSlider, () => options.setDragging("cameraVerticalAngle", true), () => {
+    options.setDragging("cameraVerticalAngle", false);
+    const selected = options.getSelected();
+    if (selected?.type === "cameraOrbit") {
+      updateSliderRange(options.cameraVerticalAngleSlider, selected.cameraVerticalAngle || 0, options.rotationStages, false);
+      options.onRender();
+    }
+  });
+  setupSliderDrag(options.cameraHorizontalAngleSlider, () => options.setDragging("cameraHorizontalAngle", true), () => {
+    options.setDragging("cameraHorizontalAngle", false);
+    const selected = options.getSelected();
+    if (selected?.type === "cameraOrbit") {
+      updateSliderRange(options.cameraHorizontalAngleSlider, selected.cameraHorizontalAngle || 0, options.rotationStages, false);
+      options.onRender();
+    }
+  });
   setupSliderDrag(options.cameraOrbitDistanceSlider, () => options.setDragging("cameraOrbitDistance", true), () => {
     options.setDragging("cameraOrbitDistance", false);
     const selected = options.getSelected();
@@ -32524,7 +32859,7 @@ function setupPropertyNumberInputs(options) {
       updateRange: (value) => updateSliderRangePositive(inputs.shapeWidthSlider, value, options.sizeStages, false),
       onCommit: (value) => {
         const selected = options.getSelected();
-        if (!selected || selected.type !== "shape")
+        if (!selected || selected.type !== "shape" && selected.type !== "image")
           return;
         selected.width = value;
         inputs.shapeWidthSlider.value = String(value);
@@ -32543,7 +32878,7 @@ function setupPropertyNumberInputs(options) {
       updateRange: (value) => updateSliderRangePositive(inputs.shapeHeightSlider, value, options.sizeStages, false),
       onCommit: (value) => {
         const selected = options.getSelected();
-        if (!selected || selected.type !== "shape")
+        if (!selected || selected.type !== "shape" && selected.type !== "image")
           return;
         selected.height = value;
         inputs.shapeHeightSlider.value = String(value);
@@ -32573,12 +32908,12 @@ function setupPropertyNumberInputs(options) {
     {
       input: inputs.cameraVerticalAngleNumber,
       slider: inputs.cameraVerticalAngleSlider,
-      min: -89,
-      max: 89,
+      min: -1440,
+      max: 1440,
       defaultValue: 0,
-      stages: null,
+      stages: options.rotationStages,
       getIsDragging: () => false,
-      updateRange: () => void 0,
+      updateRange: (value) => updateSliderRange(inputs.cameraVerticalAngleSlider, value, options.rotationStages, false),
       onCommit: (value) => {
         const selected = options.getSelected();
         if (!selected || selected.type !== "cameraOrbit")
@@ -32592,12 +32927,12 @@ function setupPropertyNumberInputs(options) {
     {
       input: inputs.cameraHorizontalAngleNumber,
       slider: inputs.cameraHorizontalAngleSlider,
-      min: -180,
-      max: 180,
+      min: -1440,
+      max: 1440,
       defaultValue: 0,
-      stages: null,
+      stages: options.rotationStages,
       getIsDragging: () => false,
-      updateRange: () => void 0,
+      updateRange: (value) => updateSliderRange(inputs.cameraHorizontalAngleSlider, value, options.rotationStages, false),
       onCommit: (value) => {
         const selected = options.getSelected();
         if (!selected || selected.type !== "cameraOrbit")
@@ -32681,7 +33016,7 @@ function getClipAtPosition(ctx2, clips2, frame, x, y, width, height, defaultFont
   return null;
 }
 function getClipBounds(ctx2, clip, defaultFont) {
-  if (clip.type === "shape") {
+  if (clip.type === "shape" || clip.type === "image" || clip.type === "media" && clip.mediaType?.startsWith("image/")) {
     return { width: clip.width || 100, height: clip.height || 100 };
   }
   if (clip.type !== "text") {
@@ -32704,9 +33039,19 @@ function setupPreviewDrag(options) {
   let pointerStartY = 0;
   let clipStartX = 0;
   let clipStartY = 0;
+  let cameraOrbitBaseHorizontal = 0;
+  let cameraOrbitBaseVertical = 0;
+  let cameraOrbitStartX = 0;
+  let cameraOrbitStartY = 0;
   const onPointerDown = (event) => {
     if (event.button !== 0)
       return;
+    const frame = options.getCurrentFrame();
+    const hasCamera = options.clips.some((clip2) => {
+      if (clip2.type !== "cameraPosition" && clip2.type !== "cameraOrbit")
+        return false;
+      return frame >= clip2.startFrame && frame < clip2.startFrame + clip2.duration;
+    });
     const position = getCanvasCoords(options.canvas, event);
     const clip = options.pickClip ? options.pickClip(event.clientX, event.clientY) : getClipAtPosition(
       options.ctx,
@@ -32720,6 +33065,9 @@ function setupPreviewDrag(options) {
     );
     if (!clip)
       return;
+    if (hasCamera && clip.type !== "cameraPosition" && clip.type !== "cameraOrbit") {
+      return;
+    }
     options.onSelect(clip);
     isPointerDown = true;
     pointerDownClip = clip;
@@ -32728,6 +33076,12 @@ function setupPreviewDrag(options) {
     pointerStartY = clip.type === "cameraOrbit" ? event.clientY : clipPosition?.y ?? position.y;
     clipStartX = clip.x;
     clipStartY = clip.y;
+    if (clip.type === "cameraOrbit") {
+      cameraOrbitBaseHorizontal = clip.cameraHorizontalAngle ?? 0;
+      cameraOrbitBaseVertical = clip.cameraVerticalAngle ?? 0;
+      cameraOrbitStartX = event.clientX;
+      cameraOrbitStartY = event.clientY;
+    }
     options.canvas.style.cursor = "grabbing";
     document.addEventListener("mousemove", onPointerMove);
     document.addEventListener("mouseup", onPointerUp);
@@ -32741,10 +33095,23 @@ function setupPreviewDrag(options) {
     const position = clipPosition ?? getCanvasCoords(options.canvas, event);
     if (Math.abs(position.x - pointerStartX) < 0.5 && Math.abs(position.y - pointerStartY) < 0.5)
       return;
+    if (pointerDownClip.type === "cameraOrbit") {
+      const horizontalAngle = Math.max(-1440, Math.min(
+        1440,
+        cameraOrbitBaseHorizontal - (event.clientX - cameraOrbitStartX) * 0.5
+      ));
+      const verticalAngle = Math.max(-1440, Math.min(
+        1440,
+        cameraOrbitBaseVertical - (event.clientY - cameraOrbitStartY) * 0.5
+      ));
+      options.onMove(pointerDownClip, clipStartX, clipStartY, horizontalAngle, verticalAngle);
+      options.onRender();
+      return;
+    }
     const deltaX = position.x - pointerStartX;
     const deltaY = position.y - pointerStartY;
-    const newX = Math.round(clipStartX + deltaX);
-    const newY = Math.round(clipStartY + deltaY);
+    const newX = Math.max(-8e3, Math.min(8e3, Math.round(clipStartX + deltaX)));
+    const newY = Math.max(-8e3, Math.min(8e3, Math.round(clipStartY + deltaY)));
     options.onMove(pointerDownClip, newX, newY, deltaX, deltaY);
     options.onRender();
   };
@@ -32757,6 +33124,128 @@ function setupPreviewDrag(options) {
     document.removeEventListener("mouseup", onPointerUp);
   };
   options.canvas.addEventListener("mousedown", onPointerDown);
+}
+
+// src/interaction/audioEngine.ts
+function createAudioEngine(options) {
+  const context = new AudioContext();
+  const buffers = /* @__PURE__ */ new Map();
+  const sources = /* @__PURE__ */ new Map();
+  let scheduleToken = 0;
+  const stopSources = () => {
+    for (const { source, gain } of sources.values()) {
+      source.onended = null;
+      try {
+        source.stop();
+      } catch {
+      }
+      source.disconnect();
+      gain.disconnect();
+    }
+    sources.clear();
+  };
+  const schedule = (startFrame, startTime) => {
+    const fps = Math.max(1, options.getFps());
+    for (const clip of options.getClips()) {
+      if (clip.type !== "audio")
+        continue;
+      const buffer = buffers.get(clip.id);
+      if (!buffer)
+        continue;
+      const frameOffset = Math.max(0, startFrame - clip.startFrame);
+      const offset = frameOffset / fps;
+      const duration = Math.min(buffer.duration - offset, clip.duration / fps - offset);
+      if (duration <= 0)
+        continue;
+      const source = context.createBufferSource();
+      const gain = context.createGain();
+      source.buffer = buffer;
+      gain.gain.value = Math.max(0, Math.min(1, clip.volume ?? 1));
+      source.connect(gain);
+      gain.connect(context.destination);
+      sources.set(clip.id, { source, gain });
+      source.onended = () => {
+        if (sources.get(clip.id)?.source !== source)
+          return;
+        sources.delete(clip.id);
+        source.disconnect();
+        gain.disconnect();
+      };
+      const clipStartFrame = Math.max(startFrame, clip.startFrame);
+      const when = startTime + Math.max(0, clip.startFrame - startFrame) / fps;
+      const remainingDuration = Math.min(duration, (clip.startFrame + clip.duration - clipStartFrame) / fps);
+      source.start(when, offset, remainingDuration);
+    }
+  };
+  let contextReady = false;
+  async function ensureContextReady() {
+    if (contextReady)
+      return;
+    if (context.state === "suspended") {
+      await context.resume();
+    }
+    contextReady = true;
+  }
+  const play = (startFrame) => {
+    const token = ++scheduleToken;
+    stopSources();
+    void ensureContextReady().then(() => {
+      if (scheduleToken === token) {
+        schedule(startFrame, context.currentTime);
+      }
+    });
+  };
+  return {
+    async prepare(clip) {
+      if (clip.type !== "audio" || !clip.mediaId || buffers.has(clip.id))
+        return;
+      const blob = await options.getMediaById(clip.mediaId);
+      if (!blob)
+        return;
+      try {
+        const buffer = await context.decodeAudioData(await blob.arrayBuffer());
+        buffers.set(clip.id, buffer);
+      } catch (err) {
+        console.error("decodeAudioData failed:", err);
+      }
+    },
+    remove(clipId) {
+      const active = sources.get(clipId);
+      if (active) {
+        active.source.onended = null;
+        try {
+          active.source.stop();
+        } catch {
+        }
+        active.source.disconnect();
+        active.gain.disconnect();
+        sources.delete(clipId);
+      }
+      buffers.delete(clipId);
+    },
+    play,
+    stop() {
+      scheduleToken++;
+      stopSources();
+    },
+    seek(frame, isPlaying) {
+      const token = ++scheduleToken;
+      stopSources();
+      if (!isPlaying)
+        return;
+      void ensureContextReady().then(() => {
+        if (scheduleToken === token)
+          schedule(frame, context.currentTime);
+      });
+    },
+    getCurrentTime: () => context.currentTime,
+    dispose() {
+      scheduleToken++;
+      stopSources();
+      buffers.clear();
+      void context.close();
+    }
+  };
 }
 
 // src/persistence/settingsStorage.ts
@@ -32777,6 +33266,49 @@ function loadSettings(key) {
     console.warn("Settings load failed:", error2);
     return null;
   }
+}
+
+// src/persistence/mediaStorage.ts
+var DATABASE_NAME = "aj-editor";
+var STORE_NAME = "media";
+var databasePromise = null;
+function createMediaId() {
+  return crypto.randomUUID();
+}
+function saveMedia(record) {
+  return openDatabase().then((database) => new Promise((resolve, reject) => {
+    const transaction = database.transaction(STORE_NAME, "readwrite");
+    transaction.objectStore(STORE_NAME).put(record);
+    transaction.oncomplete = () => resolve();
+    transaction.onerror = () => reject(transaction.error);
+    transaction.onabort = () => reject(transaction.error);
+  }));
+}
+function getMedia(id) {
+  return openDatabase().then((database) => new Promise((resolve, reject) => {
+    const request = database.transaction(STORE_NAME, "readonly").objectStore(STORE_NAME).get(id);
+    request.onsuccess = () => resolve(request.result);
+    request.onerror = () => reject(request.error);
+  }));
+}
+function openDatabase() {
+  if (databasePromise)
+    return databasePromise;
+  databasePromise = new Promise((resolve, reject) => {
+    const request = indexedDB.open(DATABASE_NAME, 1);
+    request.onupgradeneeded = () => {
+      const database = request.result;
+      if (!database.objectStoreNames.contains(STORE_NAME)) {
+        database.createObjectStore(STORE_NAME, { keyPath: "id" });
+      }
+    };
+    request.onsuccess = () => resolve(request.result);
+    request.onerror = () => {
+      databasePromise = null;
+      reject(request.error);
+    };
+  });
+  return databasePromise;
 }
 
 // src/main.ts
@@ -32820,6 +33352,8 @@ var shapeHeightSlider = document.getElementById("shapeHeightSlider");
 var strokeWidthNumber = document.getElementById("strokeWidthNumber");
 var shapeWidthNumber = document.getElementById("shapeWidthNumber");
 var shapeHeightNumber = document.getElementById("shapeHeightNumber");
+var audioVolumeSlider = document.getElementById("audioVolumeSlider");
+var audioVolumeNumber = document.getElementById("audioVolumeNumber");
 var cameraProperties = document.getElementById("cameraProperties");
 var cameraDisabledGroup = document.getElementById("cameraDisabledGroup");
 var cameraDisabledInput = document.getElementById("cameraDisabledInput");
@@ -32870,6 +33404,7 @@ var selectedId = null;
 var idCounter = 0;
 var currentFrame = 0;
 var currentLayerCount = CONFIG.layerCount;
+var hiddenLayers = /* @__PURE__ */ new Set();
 var currentProjectName = "\u7121\u984C";
 var timelineZoom = 1;
 var MIN_ZOOM = 0.0625;
@@ -32885,21 +33420,63 @@ var isDraggingHeight = false;
 var isDraggingFontSize = false;
 var MIN_PANEL_WIDTH = 200;
 var MIN_TIMELINE_HEIGHT = 80;
+var playbackStartTime = 0;
+var playbackStartFrame = 0;
+var playbackRafId = null;
+var audioEngine = createAudioEngine({
+  getFps: () => CONFIG.fps,
+  getClips: () => clips,
+  getMediaById: async (mediaId) => (await getMedia(mediaId))?.blob
+});
+function startPlaybackLoop() {
+  if (playbackRafId !== null)
+    return;
+  const loop = () => {
+    if (!playbackController.isPlaying) {
+      playbackRafId = null;
+      return;
+    }
+    const elapsed = audioEngine.getCurrentTime() - playbackStartTime;
+    const expectedFrame = playbackStartFrame + Math.floor(elapsed * CONFIG.fps);
+    if (expectedFrame !== currentFrame) {
+      currentFrame = Math.min(expectedFrame, TIMELINE_DURATION);
+      drawTimeline();
+      drawPreview();
+      if (currentFrame >= TIMELINE_DURATION) {
+        stopPlayback();
+        return;
+      }
+    }
+    playbackRafId = requestAnimationFrame(loop);
+  };
+  playbackRafId = requestAnimationFrame(loop);
+}
+function stopPlaybackLoop() {
+  if (playbackRafId !== null) {
+    cancelAnimationFrame(playbackRafId);
+    playbackRafId = null;
+  }
+}
 var playbackController = createPlaybackController({
   getCurrentFrame: () => currentFrame,
   setCurrentFrame: (frame) => {
     currentFrame = frame;
   },
   getTimelineDuration: () => TIMELINE_DURATION,
-  getFps: () => CONFIG.fps,
   onPlayingStateChange: (playing) => {
     playBtn.textContent = playing ? "\u2161" : "\u25B6";
     playBtn.classList.toggle("playing", playing);
+    if (playing) {
+      playbackStartFrame = currentFrame;
+      audioEngine.play(currentFrame);
+      playbackStartTime = audioEngine.getCurrentTime();
+      startPlaybackLoop();
+    } else {
+      stopPlaybackLoop();
+      audioEngine.stop();
+    }
   },
-  onFrameChange: () => {
-    drawTimeline();
-    drawPreview();
-  }
+  onFrameChange: () => void 0
 });
 var timelineSeek = createTimelineSeek({
   container: timelineContainer,
@@ -32913,6 +33490,7 @@ var timelineSeek = createTimelineSeek({
   },
   stopPlayback,
   onRender: () => {
+    audioEngine.seek(currentFrame, playbackController.isPlaying);
     drawTimeline();
     drawPreview();
   }
@@ -33042,7 +33620,7 @@ function applyTheme(themeName) {
 }
 function drawPreview() {
   sceneRenderer.resize(CONFIG.resolution.width, CONFIG.resolution.height);
-  sceneRenderer.render(clips, currentFrame, selectedId, CONFIG.bgColor);
+  sceneRenderer.render(clips, currentFrame, selectedId, CONFIG.bgColor, hiddenLayers);
   ctx.clearRect(0, 0, canvas.width, canvas.height);
 }
 function getClipAtPosition2(clientX, clientY) {
@@ -33068,7 +33646,8 @@ function setupPreviewDrag2() {
       if (selectedId !== clip.id)
         return;
       if (clip.type === "cameraOrbit") {
-        sceneRenderer.orbitCamera(clip, deltaX, deltaY);
+        clip.cameraHorizontalAngle = deltaX;
+        clip.cameraVerticalAngle = deltaY;
         cameraVerticalAngleSlider.value = String(clip.cameraVerticalAngle || 0);
         cameraVerticalAngleNumber.value = cameraVerticalAngleSlider.value;
         cameraHorizontalAngleSlider.value = String(clip.cameraHorizontalAngle || 0);
@@ -33172,6 +33751,7 @@ function drawTimeline() {
     timelinePaddingRight: TIMELINE_PADDING_RIGHT,
     draggingClipId: timelineDrag.getDraggingClipId(),
     isDraggingClip: timelineDrag.isDragging(),
+    hiddenLayers,
     getClipColor
   });
   const containerHeight = timelineContainer.clientHeight || Math.min(totalHeight + 8 + 32, 500);
@@ -33198,6 +33778,22 @@ function drawTimeline() {
         selectedId = id;
         syncUI();
       }
+    });
+  });
+  document.querySelectorAll(".timeline-track-label").forEach((el) => {
+    el.addEventListener("click", (e) => {
+      e.stopPropagation();
+      const layerIdStr = el.getAttribute("data-layer-id");
+      if (!layerIdStr)
+        return;
+      const layerId = parseInt(layerIdStr, 10);
+      if (hiddenLayers.has(layerId)) {
+        hiddenLayers.delete(layerId);
+      } else {
+        hiddenLayers.add(layerId);
+      }
+      drawTimeline();
+      drawPreview();
     });
   });
   document.querySelectorAll(".timeline-clip").forEach((el) => {
@@ -33415,6 +34011,8 @@ function syncUI() {
     strokeWidthNumber,
     shapeWidthNumber,
     shapeHeightNumber,
+    audioVolumeSlider,
+    audioVolumeNumber,
     xSlider,
     ySlider,
     zSlider,
@@ -33466,8 +34064,8 @@ function syncUI() {
   });
   const type = selectedClip?.type;
   const isVisualClip2 = type === "text" || type === "shape";
-  const canEditPosition = type === "text" || type === "shape" || type === "cameraPosition" || type === "rotationControl";
-  const canEditRotation = type === "text" || type === "shape" || type === "cameraPosition";
+  const canEditPosition = type === "text" || type === "shape" || type === "image" || type === "cameraPosition" || type === "rotationControl";
+  const canEditRotation = type === "text" || type === "shape" || type === "image" || type === "cameraPosition";
   positionProperties.style.display = canEditPosition ? "" : "none";
   rotationProperties.style.display = canEditRotation ? "" : "none";
   orbitCameraProperties.style.display = type === "cameraOrbit" ? "" : "none";
@@ -33490,6 +34088,18 @@ function syncUI() {
   cameraHorizontalAngleNumber.value = cameraHorizontalAngleSlider.value;
   cameraOrbitDistanceSlider.value = String(selectedClip?.type === "cameraOrbit" ? selectedClip.cameraOrbitDistance || 0 : 0);
   cameraOrbitDistanceNumber.value = cameraOrbitDistanceSlider.value;
+  updateSliderRange(
+    cameraVerticalAngleSlider,
+    selectedClip?.type === "cameraOrbit" ? selectedClip.cameraVerticalAngle || 0 : 0,
+    SLIDER_STAGES.rotation,
+    false
+  );
+  updateSliderRange(
+    cameraHorizontalAngleSlider,
+    selectedClip?.type === "cameraOrbit" ? selectedClip.cameraHorizontalAngle || 0 : 0,
+    SLIDER_STAGES.rotation,
+    false
+  );
   updateSliderRange(
     cameraOrbitDistanceSlider,
     selectedClip?.type === "cameraOrbit" ? selectedClip.cameraOrbitDistance || 0 : 0,
@@ -33521,9 +34131,98 @@ function addClip(type) {
   updateTimelineDuration2();
   syncUI();
 }
+var MEDIA_FILE_ACCEPT = ".mp4,.m4v,.mp3,.wav,.m4a,.png,.jpg,.jpeg,.gif,.webp";
+function selectMediaFiles(multiple) {
+  return new Promise((resolve) => {
+    const input = document.createElement("input");
+    input.type = "file";
+    input.accept = MEDIA_FILE_ACCEPT;
+    input.multiple = multiple;
+    input.style.display = "none";
+    const finish = (files) => {
+      input.remove();
+      resolve(files);
+    };
+    input.addEventListener("change", () => {
+      const files = Array.from(input.files || []);
+      finish(files.length > 0 ? files : null);
+    }, { once: true });
+    input.addEventListener("cancel", () => finish(null), { once: true });
+    document.body.appendChild(input);
+    input.click();
+  });
+}
+function isSupportedMediaFile(file) {
+  return MEDIA_FILE_ACCEPT.split(",").some((extension) => file.name.toLowerCase().endsWith(extension));
+}
+function getMediaMimeType(file) {
+  if (file.type)
+    return file.type;
+  const extension = file.name.toLowerCase().split(".").pop();
+  const mimeTypes = {
+    mp4: "video/mp4",
+    m4v: "video/x-m4v",
+    mp3: "audio/mpeg",
+    wav: "audio/wav",
+    m4a: "audio/mp4",
+    png: "image/png",
+    jpg: "image/jpeg",
+    jpeg: "image/jpeg",
+    gif: "image/gif",
+    webp: "image/webp"
+  };
+  return mimeTypes[extension || ""] || "application/octet-stream";
+}
+async function addMediaFiles(files) {
+  let imported = false;
+  for (const file of files) {
+    if (!isSupportedMediaFile(file))
+      continue;
+    const layerId = findAvailableLayer2(currentFrame, DEFAULT_CLIP_DURATION);
+    if (layerId === null) {
+      alert("\u3053\u308C\u4EE5\u4E0A\u30AF\u30EA\u30C3\u30D7\u3092\u8FFD\u52A0\u3067\u304D\u307E\u305B\u3093\u3002\u30EC\u30A4\u30E4\u30FC\u6570\u3092\u5897\u3084\u3059\u304B\u3001\u65E2\u5B58\u306E\u30AF\u30EA\u30C3\u30D7\u3092\u79FB\u52D5\u3057\u3066\u304F\u3060\u3055\u3044\u3002");
+      break;
+    }
+    const mediaId = createMediaId();
+    const mediaType = getMediaMimeType(file);
+    await saveMedia({
+      id: mediaId,
+      name: file.name,
+      size: file.size,
+      type: mediaType,
+      blob: file,
+      createdAt: (/* @__PURE__ */ new Date()).toISOString()
+    });
+    const isImage = mediaType.startsWith("image/");
+    const isAudio = mediaType.startsWith("audio/");
+    const clip = createClip(isImage ? "image" : isAudio ? "audio" : "media", generateId(), layerId, currentFrame, DEFAULT_CLIP_DURATION, DEFAULT_FONT);
+    clip.mediaId = mediaId;
+    clip.mediaName = file.name;
+    clip.mediaType = mediaType;
+    clip.fileName = file.name;
+    clip.src = URL.createObjectURL(file);
+    if (isAudio) {
+      clip.volume = 1;
+      await audioEngine.prepare(clip);
+    }
+    applyOverlapPrevention2(clip);
+    clips.push(clip);
+    selectedId = clip.id;
+    imported = true;
+  }
+  if (imported) {
+    updateTimelineDuration2();
+    syncUI();
+  }
+}
 function deleteSelected() {
   if (!selectedId)
     return;
+  const selectedClip = clips.find((clip) => clip.id === selectedId);
+  if (selectedClip?.src?.startsWith("blob:"))
+    URL.revokeObjectURL(selectedClip.src);
+  if (selectedClip?.type === "audio")
+    audioEngine.remove(selectedClip.id);
   clips = clips.filter((c) => c.id !== selectedId);
   selectedId = clips.length > 0 ? clips[0].id : null;
   updateTimelineDuration2();
@@ -33546,6 +34245,8 @@ function updateSelected() {
     strokeWidthNumber,
     shapeWidthNumber,
     shapeHeightNumber,
+    audioVolumeSlider,
+    audioVolumeNumber,
     xSlider,
     ySlider,
     zSlider,
@@ -33581,6 +34282,7 @@ function updateSelected() {
         cameraOrbitDistanceNumber.value = String(selectedClip.cameraOrbitDistance);
       }
     }
+    audioEngine.seek(currentFrame, playbackController.isPlaying);
     drawPreview();
     drawTimeline();
   });
@@ -33602,6 +34304,8 @@ function setupAllNumberInputs() {
       strokeWidthNumber,
       shapeWidthNumber,
       shapeHeightNumber,
+      audioVolumeSlider,
+      audioVolumeNumber,
       xSlider,
       ySlider,
       zSlider,
@@ -33691,6 +34395,18 @@ var addShapeBtn = document.getElementById("addShapeBtn");
 addShapeBtn.addEventListener("click", () => {
   addClip("shape");
 });
+var addMediaBtn = document.getElementById("addMediaBtn");
+addMediaBtn.addEventListener("click", async () => {
+  const files = await selectMediaFiles(true);
+  if (!files)
+    return;
+  try {
+    await addMediaFiles(files);
+  } catch (error2) {
+    console.error("Media import error:", error2);
+    alert("\u30E1\u30C7\u30A3\u30A2\u306E\u8AAD\u307F\u8FBC\u307F\u306B\u5931\u6557\u3057\u307E\u3057\u305F\u3002");
+  }
+});
 for (const [buttonId, type] of [
   ["addCameraPositionBtn", "cameraPosition"],
   ["addCameraOrbitBtn", "cameraOrbit"],
@@ -33718,6 +34434,11 @@ strokeColorPicker.addEventListener("input", () => {
 strokeWidthSlider.addEventListener("input", updateSelected);
 shapeWidthSlider.addEventListener("input", updateSelected);
 shapeHeightSlider.addEventListener("input", updateSelected);
+audioVolumeSlider.addEventListener("input", updateSelected);
+audioVolumeNumber.addEventListener("input", () => {
+  audioVolumeSlider.value = audioVolumeNumber.value;
+  updateSelected();
+});
 xSlider.addEventListener("input", updateSelected);
 ySlider.addEventListener("input", updateSelected);
 zSlider.addEventListener("input", updateSelected);
@@ -33752,6 +34473,8 @@ setupPropertySliderDrags({
   rotationSlider,
   rotationXSlider,
   rotationYSlider,
+  cameraVerticalAngleSlider,
+  cameraHorizontalAngleSlider,
   strokeWidthSlider,
   shapeWidthSlider,
   shapeHeightSlider,
@@ -33769,6 +34492,8 @@ setupPropertySliderDrags({
     if (key === "rotation")
       isDraggingRotation = isDragging;
     if (key === "rotationX" || key === "rotationY")
+      isDraggingRotation = isDragging;
+    if (key === "cameraVerticalAngle" || key === "cameraHorizontalAngle")
       isDraggingRotation = isDragging;
     if (key === "cameraOrbitDistance")
       isDraggingCameraOrbitDistance = isDragging;
@@ -33821,62 +34546,136 @@ function setBackgroundColor(color) {
 }
 function loadProject(file) {
   readProjectFile(file, (data) => {
-    try {
-      if (data.version !== "1.0") {
-        console.warn("Different project version:", data.version);
-        if (!confirm(`\u30D7\u30ED\u30B8\u30A7\u30AF\u30C8\u306E\u30D0\u30FC\u30B8\u30E7\u30F3\u304C\u7570\u306A\u308A\u307E\u3059 (${data.version})\u3002
-\u8AAD\u307F\u8FBC\u307F\u3092\u7D9A\u884C\u3057\u307E\u3059\u304B\uFF1F`)) {
-          return;
-        }
-      }
-      clips = data.clips || [];
-      if (data.projectName) {
-        currentProjectName = data.projectName;
-      } else {
-        currentProjectName = "\u7121\u984C";
-      }
-      if (data.config) {
-        if (data.config.bgColor) {
-          CONFIG.bgColor = data.config.bgColor;
-          bgColorPicker.value = CONFIG.bgColor;
-        }
-        if (data.config.resolution) {
-          CONFIG.resolution = data.config.resolution;
-          canvas.width = CONFIG.resolution.width;
-          canvas.height = CONFIG.resolution.height;
-          resolutionSelect.value = `${CONFIG.resolution.width}x${CONFIG.resolution.height}`;
-        }
-        if (data.config.fps) {
-          CONFIG.fps = data.config.fps;
-          fpsSelect.value = String(CONFIG.fps);
-        }
-        if (data.config.layerCount) {
-          CONFIG.layerCount = data.config.layerCount;
-          currentLayerCount = data.config.layerCount;
-          layerCountInput.value = String(CONFIG.layerCount);
-        }
-      }
-      currentFrame = data.currentFrame || 0;
-      selectedId = data.selectedId || null;
-      if (data.layerCount) {
-        currentLayerCount = data.layerCount;
-      }
-      setOverlapPrevention(true);
-      updateTimelineDuration2();
-      syncUI();
-      drawPreview();
-      drawTimeline();
-      console.log(`Project loaded successfully! (${clips.length} clips)`);
-      alert(`\u30D7\u30ED\u30B8\u30A7\u30AF\u30C8\u3092\u8AAD\u307F\u8FBC\u307F\u307E\u3057\u305F\uFF01
-\u30AF\u30EA\u30C3\u30D7\u6570: ${clips.length}`);
-    } catch (err) {
-      console.error("Load error:", err);
-      alert("\u30D7\u30ED\u30B8\u30A7\u30AF\u30C8\u306E\u8AAD\u307F\u8FBC\u307F\u306B\u5931\u6557\u3057\u307E\u3057\u305F\u3002\n\u30D5\u30A1\u30A4\u30EB\u304C\u58CA\u308C\u3066\u3044\u308B\u53EF\u80FD\u6027\u304C\u3042\u308A\u307E\u3059\u3002");
-    }
+    void restoreProject(data);
   }, (err) => {
     console.error("Load error:", err);
     alert("\u30D7\u30ED\u30B8\u30A7\u30AF\u30C8\u306E\u8AAD\u307F\u8FBC\u307F\u306B\u5931\u6557\u3057\u307E\u3057\u305F\u3002\n\u30D5\u30A1\u30A4\u30EB\u304C\u58CA\u308C\u3066\u3044\u308B\u53EF\u80FD\u6027\u304C\u3042\u308A\u307E\u3059\u3002");
   });
+}
+async function restoreProject(data) {
+  try {
+    if (data.version !== "1.0") {
+      console.warn("Different project version:", data.version);
+      if (!confirm(`\u30D7\u30ED\u30B8\u30A7\u30AF\u30C8\u306E\u30D0\u30FC\u30B8\u30E7\u30F3\u304C\u7570\u306A\u308A\u307E\u3059 (${data.version})\u3002
+\u8AAD\u307F\u8FBC\u307F\u3092\u7D9A\u884C\u3057\u307E\u3059\u304B\uFF1F`))
+        return;
+    }
+    const loadedClips = Array.isArray(data.clips) ? data.clips : [];
+    audioEngine.stop();
+    for (const clip of clips) {
+      if (clip.src?.startsWith("blob:"))
+        URL.revokeObjectURL(clip.src);
+      if (clip.type === "audio")
+        audioEngine.remove(clip.id);
+    }
+    await restoreMediaSources(loadedClips);
+    await Promise.all(
+      loadedClips.filter((clip) => clip.type === "audio").map(
+        (clip) => audioEngine.prepare(clip).catch((err) => {
+          console.error(`Failed to prepare audio clip ${clip.id}:`, err);
+        })
+      )
+    );
+    clips = loadedClips;
+    currentProjectName = data.projectName || "\u7121\u984C";
+    if (data.config) {
+      if (data.config.bgColor) {
+        CONFIG.bgColor = data.config.bgColor;
+        bgColorPicker.value = CONFIG.bgColor;
+      }
+      if (data.config.resolution) {
+        CONFIG.resolution = data.config.resolution;
+        canvas.width = CONFIG.resolution.width;
+        canvas.height = CONFIG.resolution.height;
+        resolutionSelect.value = `${CONFIG.resolution.width}x${CONFIG.resolution.height}`;
+      }
+      if (data.config.fps) {
+        CONFIG.fps = data.config.fps;
+        fpsSelect.value = String(CONFIG.fps);
+      }
+      if (data.config.layerCount) {
+        CONFIG.layerCount = data.config.layerCount;
+        currentLayerCount = data.config.layerCount;
+        layerCountInput.value = String(CONFIG.layerCount);
+      }
+    }
+    currentFrame = data.currentFrame || 0;
+    audioEngine.seek(currentFrame, playbackController.isPlaying);
+    selectedId = data.selectedId || null;
+    if (data.layerCount)
+      currentLayerCount = data.layerCount;
+    hiddenLayers = Array.isArray(data.hiddenLayers) ? new Set(data.hiddenLayers) : /* @__PURE__ */ new Set();
+    setOverlapPrevention(true);
+    updateTimelineDuration2();
+    syncUI();
+    drawPreview();
+    drawTimeline();
+    console.log(`Project loaded successfully! (${clips.length} clips)`);
+    alert(`\u30D7\u30ED\u30B8\u30A7\u30AF\u30C8\u3092\u8AAD\u307F\u8FBC\u307F\u307E\u3057\u305F\uFF01
+\u30AF\u30EA\u30C3\u30D7\u6570: ${clips.length}`);
+  } catch (err) {
+    console.error("Load error:", err);
+    alert("\u30D7\u30ED\u30B8\u30A7\u30AF\u30C8\u306E\u8AAD\u307F\u8FBC\u307F\u306B\u5931\u6557\u3057\u307E\u3057\u305F\u3002\n\u30D5\u30A1\u30A4\u30EB\u304C\u58CA\u308C\u3066\u3044\u308B\u53EF\u80FD\u6027\u304C\u3042\u308A\u307E\u3059\u3002");
+  }
+}
+async function restoreMediaSources(loadedClips) {
+  const mediaGroups = /* @__PURE__ */ new Map();
+  for (const clip of loadedClips) {
+    if (clip.type !== "media" && clip.type !== "image" && clip.type !== "audio")
+      continue;
+    clip.src = "";
+    if (!clip.mediaId)
+      continue;
+    const group = mediaGroups.get(clip.mediaId) || [];
+    group.push(clip);
+    mediaGroups.set(clip.mediaId, group);
+  }
+  const missing = [];
+  for (const [id, groupedClips] of mediaGroups) {
+    const record = await getMedia(id);
+    if (!record) {
+      missing.push({ id, clips: groupedClips });
+      continue;
+    }
+    for (const clip of groupedClips) {
+      clip.src = URL.createObjectURL(record.blob);
+      clip.mediaName = record.name;
+      clip.mediaType = record.type;
+      clip.fileName = record.name;
+    }
+  }
+  if (missing.length === 0)
+    return;
+  const missingNames = missing.map((item) => item.clips[0].fileName || item.clips[0].mediaName || "\u540D\u524D\u4E0D\u660E").join("\n");
+  if (!confirm(`\u6B21\u306E\u30E1\u30C7\u30A3\u30A2\u304C\u898B\u3064\u304B\u308A\u307E\u305B\u3093\u3002
+${missingNames}
+
+OK: \u518D\u9078\u629E\u3059\u308B / \u30AD\u30E3\u30F3\u30BB\u30EB: \u30B9\u30AD\u30C3\u30D7\u3059\u308B`))
+    return;
+  for (const item of missing) {
+    const files = await selectMediaFiles(false);
+    const expectedName = item.clips[0].fileName || item.clips[0].mediaName;
+    const file = files?.find((candidate) => candidate.name === expectedName);
+    if (!file || !isSupportedMediaFile(file))
+      continue;
+    const mediaId = createMediaId();
+    const mediaType = getMediaMimeType(file);
+    await saveMedia({
+      id: mediaId,
+      name: file.name,
+      size: file.size,
+      type: mediaType,
+      blob: file,
+      createdAt: (/* @__PURE__ */ new Date()).toISOString()
+    });
+    for (const clip of item.clips) {
+      clip.mediaId = mediaId;
+      clip.mediaName = file.name;
+      clip.mediaType = mediaType;
+      clip.fileName = file.name;
+      clip.src = URL.createObjectURL(file);
+    }
+  }
 }
 var saveProjectModal = document.getElementById("saveProjectModal");
 var saveProjectNameInput = document.getElementById("saveProjectNameInput");
@@ -33887,7 +34686,10 @@ function executeSaveProject(fileName) {
     const projectData = {
       version: "1.0",
       projectName: fileName,
-      clips,
+      clips: clips.map((clip) => {
+        const { src, ...savedClip } = clip;
+        return savedClip;
+      }),
       config: {
         preventOverlap: CONFIG.preventOverlap,
         bgColor: CONFIG.bgColor,
@@ -33898,6 +34700,7 @@ function executeSaveProject(fileName) {
       currentFrame,
       selectedId,
       layerCount: currentLayerCount,
+      hiddenLayers: Array.from(hiddenLayers),
       timestamp: (/* @__PURE__ */ new Date()).toISOString()
     };
     downloadProjectFile(projectData, fileName);

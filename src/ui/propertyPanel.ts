@@ -21,6 +21,8 @@ export interface PropertyPanelInputs {
     strokeWidthNumber: HTMLInputElement;
     shapeWidthNumber: HTMLInputElement;
     shapeHeightNumber: HTMLInputElement;
+    audioVolumeSlider: HTMLInputElement;
+    audioVolumeNumber: HTMLInputElement;
     xSlider: HTMLInputElement;
     ySlider: HTMLInputElement;
     zSlider: HTMLInputElement;
@@ -53,6 +55,7 @@ export function setPropertyInputsEnabled(
         inputs.textInput, inputs.fontSelect, inputs.fontSizeSlider, inputs.colorPicker,
         inputs.shapeTypeSelect, inputs.fillColorPicker, inputs.strokeColorPicker,
         inputs.strokeWidthSlider, inputs.shapeWidthSlider, inputs.shapeHeightSlider,
+        inputs.audioVolumeSlider, inputs.audioVolumeNumber,
         inputs.xSlider, inputs.xNumber, inputs.ySlider, inputs.yNumber,
         inputs.zSlider, inputs.zNumber, inputs.rotationSlider, inputs.rotationNumber,
         inputs.rotationXSlider, inputs.rotationYSlider, inputs.rotationXNumber, inputs.rotationYNumber,
@@ -108,6 +111,9 @@ export function syncPropertyPanel(options: PropertyPanelSyncOptions): void {
             ? 'テキスト'
             : selected.type === 'shape'
                 ? '図形'
+                : selected.type === 'image' ? `画像: ${selected.fileName || selected.mediaName || ''}`
+                : selected.type === 'audio' ? `音声: ${selected.mediaName || ''}`
+                : selected.type === 'media' ? `メディア: ${selected.mediaName || ''}`
                 : selected.type === 'cameraPosition' ? 'カメラ - 位置・角度'
                     : selected.type === 'cameraOrbit' ? 'カメラ - 回り込み'
                         : selected.type === 'rotationControl' ? '回転制御'
@@ -124,6 +130,7 @@ export function syncPropertyPanel(options: PropertyPanelSyncOptions): void {
         } else if (selected.type === 'shape') {
             options.textProperties.style.display = 'none';
             options.shapeProperties.style.display = '';
+            setShapeOnlyControlsVisible(options.shapeProperties, true);
             inputs.shapeTypeSelect.value = selected.shapeType || 'rectangle';
             inputs.fillColorPicker.value = selected.fillColor || '#ffffff';
             inputs.strokeColorPicker.value = !selected.strokeColor || selected.strokeColor === 'transparent'
@@ -135,12 +142,27 @@ export function syncPropertyPanel(options: PropertyPanelSyncOptions): void {
             inputs.shapeWidthNumber.value = String(selected.width || 100);
             inputs.shapeHeightSlider.value = String(selected.height || 100);
             inputs.shapeHeightNumber.value = String(selected.height || 100);
+        } else if (selected.type === 'image') {
+            options.textProperties.style.display = 'none';
+            options.shapeProperties.style.display = '';
+            // 画像では寸法だけを編集できるよう Shape 固有項目を隠す。
+            setShapeOnlyControlsVisible(options.shapeProperties, false);
+            inputs.shapeWidthSlider.value = String(selected.width || 100);
+            inputs.shapeWidthNumber.value = String(selected.width || 100);
+            inputs.shapeHeightSlider.value = String(selected.height || 100);
+            inputs.shapeHeightNumber.value = String(selected.height || 100);
         } else {
             options.textProperties.style.display = 'none';
             options.shapeProperties.style.display = 'none';
         }
         options.cameraProperties.style.display = selected.type === 'cameraPosition' ||
             selected.type === 'cameraOrbit' || selected.type === 'rotationControl' || selected.type === 'fovControl' ? '' : 'none';
+        const audioProperties = document.getElementById('audioProperties');
+        if (audioProperties) audioProperties.style.display = selected.type === 'audio' ? '' : 'none';
+        if (selected.type === 'audio') {
+            inputs.audioVolumeSlider.value = String(selected.volume ?? 1);
+            inputs.audioVolumeNumber.value = String(selected.volume ?? 1);
+        }
 
         inputs.xSlider.value = String(selected.x);
         inputs.ySlider.value = String(selected.y);
@@ -175,6 +197,8 @@ export function syncPropertyPanel(options: PropertyPanelSyncOptions): void {
         options.textProperties.style.display = 'none';
         options.shapeProperties.style.display = 'none';
         options.cameraProperties.style.display = 'none';
+        const audioProperties = document.getElementById('audioProperties');
+        if (audioProperties) audioProperties.style.display = 'none';
         inputs.textInput.value = '';
         inputs.fontSelect.value = options.defaultFont;
         inputs.xNumber.value = '';
@@ -210,10 +234,19 @@ export function updateSelectedClip(
         inputs.strokeWidthNumber.value = String(selected.strokeWidth);
         inputs.shapeWidthNumber.value = String(selected.width);
         inputs.shapeHeightNumber.value = String(selected.height);
+    } else if (selected.type === 'image') {
+        selected.width = parseFloat(inputs.shapeWidthSlider.value) || 100;
+        selected.height = parseFloat(inputs.shapeHeightSlider.value) || 100;
+        inputs.shapeWidthNumber.value = String(selected.width);
+        inputs.shapeHeightNumber.value = String(selected.height);
+    } else if (selected.type === 'audio') {
+        selected.volume = Math.max(0, Math.min(1, parseFloat(inputs.audioVolumeSlider.value) || 0));
+        inputs.audioVolumeSlider.value = String(selected.volume);
+        inputs.audioVolumeNumber.value = String(selected.volume);
     }
 
     const positionEditable = selected.type === 'text' || selected.type === 'shape' ||
-        selected.type === 'cameraPosition' || selected.type === 'rotationControl';
+        selected.type === 'image' || selected.type === 'cameraPosition' || selected.type === 'rotationControl';
     if (positionEditable) {
         selected.x = parseFloat(inputs.xSlider.value) || 0;
         selected.y = parseFloat(inputs.ySlider.value) || 0;
@@ -223,7 +256,8 @@ export function updateSelectedClip(
         inputs.zNumber.value = String(selected.z);
     }
 
-    const rotationEditable = selected.type === 'text' || selected.type === 'shape' || selected.type === 'cameraPosition';
+    const rotationEditable = selected.type === 'text' || selected.type === 'shape' ||
+        selected.type === 'image' || selected.type === 'cameraPosition';
     if (rotationEditable) {
         selected.rotation = parseFloat(inputs.rotationSlider.value) || 0;
         selected.rotationX = parseFloat(inputs.rotationXSlider.value) || 0;
@@ -238,7 +272,15 @@ export function updateSelectedClip(
     onRender();
 }
 
-export type SliderDragKey = 'x' | 'y' | 'z' | 'rotation' | 'rotationX' | 'rotationY' | 'cameraOrbitDistance' | 'stroke' | 'width' | 'height' | 'fontSize';
+function setShapeOnlyControlsVisible(container: HTMLDivElement, visible: boolean): void {
+    const shapeOnlyLabels = new Set(['Shape', 'Fill', 'Stroke', 'Stroke W']);
+    container.querySelectorAll<HTMLElement>('.control-group').forEach(group => {
+        const label = group.querySelector('label')?.textContent?.trim() || '';
+        if (shapeOnlyLabels.has(label)) group.style.display = visible ? '' : 'none';
+    });
+}
+
+export type SliderDragKey = 'x' | 'y' | 'z' | 'rotation' | 'rotationX' | 'rotationY' | 'cameraVerticalAngle' | 'cameraHorizontalAngle' | 'cameraOrbitDistance' | 'stroke' | 'width' | 'height' | 'fontSize';
 
 export interface PropertySliderOptions {
     xSlider: HTMLInputElement;
@@ -247,6 +289,8 @@ export interface PropertySliderOptions {
     rotationSlider: HTMLInputElement;
     rotationXSlider: HTMLInputElement;
     rotationYSlider: HTMLInputElement;
+    cameraVerticalAngleSlider: HTMLInputElement;
+    cameraHorizontalAngleSlider: HTMLInputElement;
     cameraOrbitDistanceSlider: HTMLInputElement;
     strokeWidthSlider: HTMLInputElement;
     shapeWidthSlider: HTMLInputElement;
@@ -313,6 +357,24 @@ export function setupPropertySliderDrags(options: PropertySliderOptions): void {
             }
         });
     }
+
+    setupSliderDrag(options.cameraVerticalAngleSlider, () => options.setDragging('cameraVerticalAngle', true), () => {
+        options.setDragging('cameraVerticalAngle', false);
+        const selected = options.getSelected();
+        if (selected?.type === 'cameraOrbit') {
+            updateSliderRange(options.cameraVerticalAngleSlider, selected.cameraVerticalAngle || 0, options.rotationStages, false);
+            options.onRender();
+        }
+    });
+
+    setupSliderDrag(options.cameraHorizontalAngleSlider, () => options.setDragging('cameraHorizontalAngle', true), () => {
+        options.setDragging('cameraHorizontalAngle', false);
+        const selected = options.getSelected();
+        if (selected?.type === 'cameraOrbit') {
+            updateSliderRange(options.cameraHorizontalAngleSlider, selected.cameraHorizontalAngle || 0, options.rotationStages, false);
+            options.onRender();
+        }
+    });
 
     setupSliderDrag(options.cameraOrbitDistanceSlider, () => options.setDragging('cameraOrbitDistance', true), () => {
         options.setDragging('cameraOrbitDistance', false);
@@ -586,7 +648,7 @@ export function setupPropertyNumberInputs(options: PropertyNumberInputOptions): 
             updateRange: (value: number) => updateSliderRangePositive(inputs.shapeWidthSlider, value, options.sizeStages, false),
             onCommit: (value: number) => {
                 const selected = options.getSelected();
-                if (!selected || selected.type !== 'shape') return;
+                if (!selected || (selected.type !== 'shape' && selected.type !== 'image')) return;
                 selected.width = value;
                 inputs.shapeWidthSlider.value = String(value);
                 inputs.shapeWidthNumber.value = String(value);
@@ -604,7 +666,7 @@ export function setupPropertyNumberInputs(options: PropertyNumberInputOptions): 
             updateRange: (value: number) => updateSliderRangePositive(inputs.shapeHeightSlider, value, options.sizeStages, false),
             onCommit: (value: number) => {
                 const selected = options.getSelected();
-                if (!selected || selected.type !== 'shape') return;
+                if (!selected || (selected.type !== 'shape' && selected.type !== 'image')) return;
                 selected.height = value;
                 inputs.shapeHeightSlider.value = String(value);
                 inputs.shapeHeightNumber.value = String(value);
@@ -632,12 +694,12 @@ export function setupPropertyNumberInputs(options: PropertyNumberInputOptions): 
         {
             input: inputs.cameraVerticalAngleNumber,
             slider: inputs.cameraVerticalAngleSlider,
-            min: -89,
-            max: 89,
+            min: -1440,
+            max: 1440,
             defaultValue: 0,
-            stages: null,
+            stages: options.rotationStages,
             getIsDragging: () => false,
-            updateRange: () => undefined,
+            updateRange: (value: number) => updateSliderRange(inputs.cameraVerticalAngleSlider, value, options.rotationStages, false),
             onCommit: (value: number) => {
                 const selected = options.getSelected();
                 if (!selected || selected.type !== 'cameraOrbit') return;
@@ -650,12 +712,12 @@ export function setupPropertyNumberInputs(options: PropertyNumberInputOptions): 
         {
             input: inputs.cameraHorizontalAngleNumber,
             slider: inputs.cameraHorizontalAngleSlider,
-            min: -180,
-            max: 180,
+            min: -1440,
+            max: 1440,
             defaultValue: 0,
-            stages: null,
+            stages: options.rotationStages,
             getIsDragging: () => false,
-            updateRange: () => undefined,
+            updateRange: (value: number) => updateSliderRange(inputs.cameraHorizontalAngleSlider, value, options.rotationStages, false),
             onCommit: (value: number) => {
                 const selected = options.getSelected();
                 if (!selected || selected.type !== 'cameraOrbit') return;

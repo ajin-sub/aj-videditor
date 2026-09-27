@@ -23,6 +23,9 @@ export const CONFIG = {
 export const CLIP_COLORS: Record<ClipType, string> = {
     text: '#0065d8',
     shape: '#ff0055',
+    image: '#16a085',
+    audio: '#f0a128',
+    media: '#16a085',
     cameraPosition: '#29f078',
     cameraOrbit: '#00b8a9',
     rotationControl: '#e2a900',

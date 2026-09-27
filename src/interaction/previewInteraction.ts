@@ -79,7 +79,9 @@ function getClipBounds(
     clip: Clip,
     defaultFont: string
 ): { width: number; height: number } {
-    if (clip.type === 'shape') {
+    // 画像の選択範囲はクリップの幅と高さに合わせる。
+    if (clip.type === 'shape' || clip.type === 'image' ||
+        (clip.type === 'media' && clip.mediaType?.startsWith('image/'))) {
         return { width: clip.width || 100, height: clip.height || 100 };
     }
     if (clip.type !== 'text') {
@@ -104,9 +106,22 @@ export function setupPreviewDrag(options: PreviewInteractionOptions): void {
     let pointerStartY = 0;
     let clipStartX = 0;
     let clipStartY = 0;
+    let cameraOrbitBaseHorizontal = 0;
+    let cameraOrbitBaseVertical = 0;
+    let cameraOrbitStartX = 0;
+    let cameraOrbitStartY = 0;
 
     const onPointerDown = (event: MouseEvent) => {
         if (event.button !== 0) return;
+
+        // 現在のフレームにカメラ（cameraPosition / cameraOrbit）がある場合、
+        // カメラ以外のアイテムは完全に無視する（選択もドラッグも無効）。
+        const frame = options.getCurrentFrame();
+        const hasCamera = options.clips.some(clip => {
+            if (clip.type !== 'cameraPosition' && clip.type !== 'cameraOrbit') return false;
+            return frame >= clip.startFrame && frame < clip.startFrame + clip.duration;
+        });
+
         const position = getCanvasCoords(options.canvas, event);
         const clip = options.pickClip
             ? options.pickClip(event.clientX, event.clientY)
@@ -122,6 +137,11 @@ export function setupPreviewDrag(options: PreviewInteractionOptions): void {
             );
         if (!clip) return;
 
+        // カメラがあるフレームでは、カメラ以外のアイテムを無視する
+        if (hasCamera && clip.type !== 'cameraPosition' && clip.type !== 'cameraOrbit') {
+            return;
+        }
+
         options.onSelect(clip);
         isPointerDown = true;
         pointerDownClip = clip;
@@ -130,6 +150,13 @@ export function setupPreviewDrag(options: PreviewInteractionOptions): void {
         pointerStartY = clip.type === 'cameraOrbit' ? event.clientY : clipPosition?.y ?? position.y;
         clipStartX = clip.x;
         clipStartY = clip.y;
+        // cameraOrbit は開始時角度を基準にして絶対差分で更新し、累積加算を防ぐ。
+        if (clip.type === 'cameraOrbit') {
+            cameraOrbitBaseHorizontal = clip.cameraHorizontalAngle ?? 0;
+            cameraOrbitBaseVertical = clip.cameraVerticalAngle ?? 0;
+            cameraOrbitStartX = event.clientX;
+            cameraOrbitStartY = event.clientY;
+        }
         options.canvas.style.cursor = 'grabbing';
         document.addEventListener('mousemove', onPointerMove);
         document.addEventListener('mouseup', onPointerUp);
@@ -144,10 +171,21 @@ export function setupPreviewDrag(options: PreviewInteractionOptions): void {
         const position = clipPosition ?? getCanvasCoords(options.canvas, event);
         if (Math.abs(position.x - pointerStartX) < 0.5 && Math.abs(position.y - pointerStartY) < 0.5) return;
 
+        if (pointerDownClip.type === 'cameraOrbit') {
+            // cameraOrbit の絶対差分計算で感度を 2 倍にし、垂直角の方向を上向き増加に反転する。
+            const horizontalAngle = Math.max(-1440, Math.min(1440,
+                cameraOrbitBaseHorizontal - (event.clientX - cameraOrbitStartX) * 0.5));
+            const verticalAngle = Math.max(-1440, Math.min(1440,
+                cameraOrbitBaseVertical - (event.clientY - cameraOrbitStartY) * 0.5));
+            options.onMove(pointerDownClip, clipStartX, clipStartY, horizontalAngle, verticalAngle);
+            options.onRender();
+            return;
+        }
+
         const deltaX = position.x - pointerStartX;
         const deltaY = position.y - pointerStartY;
-        const newX = Math.round(clipStartX + deltaX);
-        const newY = Math.round(clipStartY + deltaY);
+        const newX = Math.max(-8000, Math.min(8000, Math.round(clipStartX + deltaX)));
+        const newY = Math.max(-8000, Math.min(8000, Math.round(clipStartY + deltaY)));
         options.onMove(pointerDownClip, newX, newY, deltaX, deltaY);
         options.onRender();
     };

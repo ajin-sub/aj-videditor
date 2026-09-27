@@ -64,10 +64,12 @@ import {
 } from './ui/propertyPanel';
 import { setupNumberInput } from './ui/numberInput';
 import { setupPreviewDrag as setupPreviewDragInteraction } from './interaction/previewInteraction';
+import { createAudioEngine } from './interaction/audioEngine';
 import {
     loadSettings as loadStoredSettings,
     saveSettings as saveStoredSettings,
 } from './persistence/settingsStorage';
+import { createMediaId, getMedia, saveMedia } from './persistence/mediaStorage';
 
 // -------- configを参照する変数 --------
 let TIMELINE_DURATION = 1;
@@ -123,6 +125,8 @@ const shapeHeightSlider = document.getElementById('shapeHeightSlider') as HTMLIn
 const strokeWidthNumber = document.getElementById('strokeWidthNumber') as HTMLInputElement;
 const shapeWidthNumber = document.getElementById('shapeWidthNumber') as HTMLInputElement;
 const shapeHeightNumber = document.getElementById('shapeHeightNumber') as HTMLInputElement;
+const audioVolumeSlider = document.getElementById('audioVolumeSlider') as HTMLInputElement;
+const audioVolumeNumber = document.getElementById('audioVolumeNumber') as HTMLInputElement;
 
 // カメラ用DOM
 const cameraProperties = document.getElementById('cameraProperties') as HTMLDivElement;
@@ -188,6 +192,7 @@ let selectedId: string | null = null;
 let idCounter = 0;
 let currentFrame = 0;
 let currentLayerCount = CONFIG.layerCount;
+let hiddenLayers: Set<number> = new Set();
 
 let currentProjectName = '無題';
 
@@ -211,20 +216,64 @@ let isDraggingFontSize = false;
 // リサイズ用状態
 const MIN_PANEL_WIDTH = 200;
 const MIN_TIMELINE_HEIGHT = 80;
+let playbackStartTime = 0;
+let playbackStartFrame = 0;
+let playbackRafId: number | null = null;
+
+const audioEngine = createAudioEngine({
+    getFps: () => CONFIG.fps,
+    getClips: () => clips,
+    getMediaById: async (mediaId) => (await getMedia(mediaId))?.blob,
+});
+
+function startPlaybackLoop(): void {
+    if (playbackRafId !== null) return;
+    const loop = (): void => {
+        if (!playbackController.isPlaying) {
+            playbackRafId = null;
+            return;
+        }
+        const elapsed = audioEngine.getCurrentTime() - playbackStartTime;
+        const expectedFrame = playbackStartFrame + Math.floor(elapsed * CONFIG.fps);
+        if (expectedFrame !== currentFrame) {
+            currentFrame = Math.min(expectedFrame, TIMELINE_DURATION);
+            drawTimeline();
+            drawPreview();
+            if (currentFrame >= TIMELINE_DURATION) {
+                stopPlayback();
+                return;
+            }
+        }
+        playbackRafId = requestAnimationFrame(loop);
+    };
+    playbackRafId = requestAnimationFrame(loop);
+}
+
+function stopPlaybackLoop(): void {
+    if (playbackRafId !== null) {
+        cancelAnimationFrame(playbackRafId);
+        playbackRafId = null;
+    }
+}
 
 const playbackController = createPlaybackController({
     getCurrentFrame: () => currentFrame,
     setCurrentFrame: (frame) => { currentFrame = frame; },
     getTimelineDuration: () => TIMELINE_DURATION,
-    getFps: () => CONFIG.fps,
     onPlayingStateChange: (playing) => {
         playBtn.textContent = playing ? 'Ⅱ' : '▶';
         playBtn.classList.toggle('playing', playing);
+        if (playing) {
+            playbackStartFrame = currentFrame;
+            audioEngine.play(currentFrame);
+            playbackStartTime = audioEngine.getCurrentTime();
+            startPlaybackLoop();
+        } else {
+            stopPlaybackLoop();
+            audioEngine.stop();
+        }
     },
-    onFrameChange: () => {
-        drawTimeline();
-        drawPreview();
-    },
+    onFrameChange: () => undefined,
 });
 
 const timelineSeek = createTimelineSeek({
@@ -237,6 +286,7 @@ const timelineSeek = createTimelineSeek({
     setCurrentFrame: (frame) => { currentFrame = frame; },
     stopPlayback,
     onRender: () => {
+        audioEngine.seek(currentFrame, playbackController.isPlaying);
         drawTimeline();
         drawPreview();
     },
@@ -386,7 +436,7 @@ function applyTheme(themeName: string): void {
 // -------- プレビュー描画 --------
 function drawPreview(): void {
     sceneRenderer.resize(CONFIG.resolution.width, CONFIG.resolution.height);
-    sceneRenderer.render(clips, currentFrame, selectedId, CONFIG.bgColor);
+    sceneRenderer.render(clips, currentFrame, selectedId, CONFIG.bgColor, hiddenLayers);
     ctx.clearRect(0, 0, canvas.width, canvas.height);
 }
 
@@ -414,7 +464,9 @@ function setupPreviewDrag(): void {
         onMove: (clip, newX, newY, deltaX, deltaY) => {
             if (selectedId !== clip.id) return;
             if (clip.type === 'cameraOrbit') {
-                sceneRenderer.orbitCamera(clip, deltaX, deltaY);
+                // cameraOrbit は絶対角度をそのまま反映し、業務ロジックを累積加算から切り離す。
+                clip.cameraHorizontalAngle = deltaX;
+                clip.cameraVerticalAngle = deltaY;
                 cameraVerticalAngleSlider.value = String(clip.cameraVerticalAngle || 0);
                 cameraVerticalAngleNumber.value = cameraVerticalAngleSlider.value;
                 cameraHorizontalAngleSlider.value = String(clip.cameraHorizontalAngle || 0);
@@ -530,6 +582,7 @@ function drawTimeline(): void {
         timelinePaddingRight: TIMELINE_PADDING_RIGHT,
         draggingClipId: timelineDrag.getDraggingClipId(),
         isDraggingClip: timelineDrag.isDragging(),
+        hiddenLayers,
         getClipColor,
     });
 
@@ -558,6 +611,22 @@ function drawTimeline(): void {
                 selectedId = id;
                 syncUI();
             }
+        });
+    });
+
+    document.querySelectorAll<HTMLElement>('.timeline-track-label').forEach(el => {
+        el.addEventListener('click', (e) => {
+            e.stopPropagation();
+            const layerIdStr = el.getAttribute('data-layer-id');
+            if (!layerIdStr) return;
+            const layerId = parseInt(layerIdStr, 10);
+            if (hiddenLayers.has(layerId)) {
+                hiddenLayers.delete(layerId);
+            } else {
+                hiddenLayers.add(layerId);
+            }
+            drawTimeline();
+            drawPreview();
         });
     });
 
@@ -810,7 +879,7 @@ function syncUI(): void {
         textInput, fontSelect, fontSizeSlider, colorPicker, fontSizeNumber,
         shapeTypeSelect, fillColorPicker, strokeColorPicker, strokeWidthSlider,
         shapeWidthSlider, shapeHeightSlider, strokeWidthNumber, shapeWidthNumber,
-        shapeHeightNumber, xSlider, ySlider, zSlider,
+        shapeHeightNumber, audioVolumeSlider, audioVolumeNumber, xSlider, ySlider, zSlider,
         rotationSlider, rotationXSlider, rotationYSlider,
         rotationXNumber, rotationYNumber, xNumber, yNumber, zNumber, rotationNumber,
         cameraFovInput, cameraFovSlider,
@@ -849,8 +918,8 @@ function syncUI(): void {
 
     const type = selectedClip?.type;
     const isVisualClip = type === 'text' || type === 'shape';
-    const canEditPosition = type === 'text' || type === 'shape' || type === 'cameraPosition' || type === 'rotationControl';
-    const canEditRotation = type === 'text' || type === 'shape' || type === 'cameraPosition';
+    const canEditPosition = type === 'text' || type === 'shape' || type === 'image' || type === 'cameraPosition' || type === 'rotationControl';
+    const canEditRotation = type === 'text' || type === 'shape' || type === 'image' || type === 'cameraPosition';
     positionProperties.style.display = canEditPosition ? '' : 'none';
     rotationProperties.style.display = canEditRotation ? '' : 'none';
     orbitCameraProperties.style.display = type === 'cameraOrbit' ? '' : 'none';
@@ -873,6 +942,18 @@ function syncUI(): void {
     cameraHorizontalAngleNumber.value = cameraHorizontalAngleSlider.value;
     cameraOrbitDistanceSlider.value = String(selectedClip?.type === 'cameraOrbit' ? selectedClip.cameraOrbitDistance || 0 : 0);
     cameraOrbitDistanceNumber.value = cameraOrbitDistanceSlider.value;
+    updateSliderRange(
+        cameraVerticalAngleSlider,
+        selectedClip?.type === 'cameraOrbit' ? selectedClip.cameraVerticalAngle || 0 : 0,
+        SLIDER_STAGES.rotation,
+        false
+    );
+    updateSliderRange(
+        cameraHorizontalAngleSlider,
+        selectedClip?.type === 'cameraOrbit' ? selectedClip.cameraHorizontalAngle || 0 : 0,
+        SLIDER_STAGES.rotation,
+        false
+    );
     updateSliderRange(
         cameraOrbitDistanceSlider,
         selectedClip?.type === 'cameraOrbit' ? selectedClip.cameraOrbitDistance || 0 : 0,
@@ -912,9 +993,95 @@ function addClip(type: ClipType): void {
     syncUI();
 }
 
+const MEDIA_FILE_ACCEPT = '.mp4,.m4v,.mp3,.wav,.m4a,.png,.jpg,.jpeg,.gif,.webp';
+
+function selectMediaFiles(multiple: boolean): Promise<File[] | null> {
+    return new Promise(resolve => {
+        const input = document.createElement('input');
+        input.type = 'file';
+        input.accept = MEDIA_FILE_ACCEPT;
+        input.multiple = multiple;
+        input.style.display = 'none';
+        const finish = (files: File[] | null): void => {
+            input.remove();
+            resolve(files);
+        };
+        input.addEventListener('change', () => {
+            const files = Array.from(input.files || []);
+            finish(files.length > 0 ? files : null);
+        }, { once: true });
+        input.addEventListener('cancel', () => finish(null), { once: true });
+        document.body.appendChild(input);
+        input.click();
+    });
+}
+
+function isSupportedMediaFile(file: File): boolean {
+    return MEDIA_FILE_ACCEPT.split(',').some(extension => file.name.toLowerCase().endsWith(extension));
+}
+
+function getMediaMimeType(file: File): string {
+    if (file.type) return file.type;
+    const extension = file.name.toLowerCase().split('.').pop();
+    const mimeTypes: Record<string, string> = {
+        mp4: 'video/mp4', m4v: 'video/x-m4v', mp3: 'audio/mpeg', wav: 'audio/wav',
+        m4a: 'audio/mp4', png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg',
+        gif: 'image/gif', webp: 'image/webp',
+    };
+    return mimeTypes[extension || ''] || 'application/octet-stream';
+}
+
+async function addMediaFiles(files: File[]): Promise<void> {
+    let imported = false;
+    for (const file of files) {
+        if (!isSupportedMediaFile(file)) continue;
+        const layerId = findAvailableLayer(currentFrame, DEFAULT_CLIP_DURATION);
+        if (layerId === null) {
+            alert('これ以上クリップを追加できません。レイヤー数を増やすか、既存のクリップを移動してください。');
+            break;
+        }
+
+        const mediaId = createMediaId();
+        const mediaType = getMediaMimeType(file);
+        await saveMedia({
+            id: mediaId,
+            name: file.name,
+            size: file.size,
+            type: mediaType,
+            blob: file,
+            createdAt: new Date().toISOString(),
+        });
+        const isImage = mediaType.startsWith('image/');
+        const isAudio = mediaType.startsWith('audio/');
+        // 画像と音声は専用クリップとして作成し、それぞれのメタデータを保持する。
+        const clip = createClip(isImage ? 'image' : isAudio ? 'audio' : 'media', generateId(), layerId, currentFrame, DEFAULT_CLIP_DURATION, DEFAULT_FONT);
+        clip.mediaId = mediaId;
+        clip.mediaName = file.name;
+        clip.mediaType = mediaType;
+        clip.fileName = file.name;
+        clip.src = URL.createObjectURL(file);
+        if (isAudio) {
+            clip.volume = 1;
+            await audioEngine.prepare(clip);
+        }
+        applyOverlapPrevention(clip);
+        clips.push(clip);
+        selectedId = clip.id;
+        imported = true;
+    }
+
+    if (imported) {
+        updateTimelineDuration();
+        syncUI();
+    }
+}
+
 // -------- テキスト削除 --------
 function deleteSelected(): void {
     if (!selectedId) return;
+    const selectedClip = clips.find(clip => clip.id === selectedId);
+    if (selectedClip?.src?.startsWith('blob:')) URL.revokeObjectURL(selectedClip.src);
+    if (selectedClip?.type === 'audio') audioEngine.remove(selectedClip.id);
     clips = clips.filter(c => c.id !== selectedId);
     selectedId = clips.length > 0 ? clips[0].id : null;
     updateTimelineDuration();
@@ -939,6 +1106,8 @@ function updateSelected(): void {
         strokeWidthNumber,
         shapeWidthNumber,
         shapeHeightNumber,
+        audioVolumeSlider,
+        audioVolumeNumber,
         xSlider,
         ySlider,
         zSlider,
@@ -974,6 +1143,7 @@ function updateSelected(): void {
                 cameraOrbitDistanceNumber.value = String(selectedClip.cameraOrbitDistance);
             }
         }
+        audioEngine.seek(currentFrame, playbackController.isPlaying);
         drawPreview();
         drawTimeline();
     });
@@ -986,7 +1156,7 @@ function setupAllNumberInputs(): void {
             textInput, fontSelect, fontSizeSlider, colorPicker, fontSizeNumber,
             shapeTypeSelect, fillColorPicker, strokeColorPicker, strokeWidthSlider,
             shapeWidthSlider, shapeHeightSlider, strokeWidthNumber, shapeWidthNumber,
-            shapeHeightNumber, xSlider, ySlider, zSlider,
+            shapeHeightNumber, audioVolumeSlider, audioVolumeNumber, xSlider, ySlider, zSlider,
             rotationSlider, rotationXSlider, rotationYSlider,
             rotationXNumber, rotationYNumber, xNumber, yNumber, zNumber, rotationNumber,
             cameraFovInput, cameraFovSlider,
@@ -1066,6 +1236,18 @@ addShapeBtn.addEventListener('click', () => {
     addClip('shape');
 });
 
+const addMediaBtn = document.getElementById('addMediaBtn') as HTMLButtonElement;
+addMediaBtn.addEventListener('click', async () => {
+    const files = await selectMediaFiles(true);
+    if (!files) return;
+    try {
+        await addMediaFiles(files);
+    } catch (error) {
+        console.error('Media import error:', error);
+        alert('メディアの読み込みに失敗しました。');
+    }
+});
+
 for (const [buttonId, type] of [
     ['addCameraPositionBtn', 'cameraPosition'],
     ['addCameraOrbitBtn', 'cameraOrbit'],
@@ -1098,6 +1280,11 @@ strokeColorPicker.addEventListener('input', () => {
 strokeWidthSlider.addEventListener('input', updateSelected);
 shapeWidthSlider.addEventListener('input', updateSelected);
 shapeHeightSlider.addEventListener('input', updateSelected);
+audioVolumeSlider.addEventListener('input', updateSelected);
+audioVolumeNumber.addEventListener('input', () => {
+    audioVolumeSlider.value = audioVolumeNumber.value;
+    updateSelected();
+});
 
 xSlider.addEventListener('input', updateSelected);
 ySlider.addEventListener('input', updateSelected);
@@ -1133,6 +1320,8 @@ setupPropertySliderDrags({
     rotationSlider,
     rotationXSlider,
     rotationYSlider,
+    cameraVerticalAngleSlider,
+    cameraHorizontalAngleSlider,
     strokeWidthSlider,
     shapeWidthSlider,
     shapeHeightSlider,
@@ -1146,6 +1335,7 @@ setupPropertySliderDrags({
         if (key === 'z') isDraggingZ = isDragging;
         if (key === 'rotation') isDraggingRotation = isDragging;
         if (key === 'rotationX' || key === 'rotationY') isDraggingRotation = isDragging;
+        if (key === 'cameraVerticalAngle' || key === 'cameraHorizontalAngle') isDraggingRotation = isDragging;
         if (key === 'cameraOrbitDistance') isDraggingCameraOrbitDistance = isDragging;
         if (key === 'stroke') isDraggingStroke = isDragging;
         if (key === 'width') isDraggingWidth = isDragging;
@@ -1199,77 +1389,134 @@ function setBackgroundColor(color: string): void {
 // プロジェクト読み込み
 function loadProject(file: File): void {
     readProjectFile(file, (data) => {
-        try {
-            // バージョンチェック
-            if (data.version !== '1.0') {
-                console.warn('Different project version:', data.version);
-                if (!confirm(`プロジェクトのバージョンが異なります (${data.version})。\n読み込みを続行しますか？`)) {
-                    return;
-                }
-            }
-
-            // クリップデータを復元（IDカウンターはリセットしない）
-            clips = data.clips || [];
-
-            // プロジェクト名を復元
-            if (data.projectName) {
-                currentProjectName = data.projectName;
-            } else {
-                currentProjectName = '無題';
-            }
-
-            // 設定を復元
-            if (data.config) {
-                if (data.config.bgColor) {
-                    CONFIG.bgColor = data.config.bgColor;
-                    bgColorPicker.value = CONFIG.bgColor;
-                }
-                if (data.config.resolution) {
-                    CONFIG.resolution = data.config.resolution;
-                    canvas.width = CONFIG.resolution.width;
-                    canvas.height = CONFIG.resolution.height;
-                    resolutionSelect.value = `${CONFIG.resolution.width}x${CONFIG.resolution.height}`;
-                }
-                if (data.config.fps) {
-                    CONFIG.fps = data.config.fps;
-                    fpsSelect.value = String(CONFIG.fps);
-                }
-                if (data.config.layerCount) {
-                    CONFIG.layerCount = data.config.layerCount;
-                    currentLayerCount = data.config.layerCount;
-                    layerCountInput.value = String(CONFIG.layerCount);
-                }
-            }
-
-            // 再生位置を復元
-            currentFrame = data.currentFrame || 0;
-
-            // 選択状態を復元
-            selectedId = data.selectedId || null;
-
-            // レイヤー数を復元
-            if (data.layerCount) {
-                currentLayerCount = data.layerCount;
-            }
-
-            setOverlapPrevention(true);
-
-            // UIを更新
-            updateTimelineDuration();
-            syncUI();
-            drawPreview();
-            drawTimeline();
-
-            console.log(`Project loaded successfully! (${clips.length} clips)`);
-            alert(`プロジェクトを読み込みました！\nクリップ数: ${clips.length}`);
-        } catch (err) {
-            console.error('Load error:', err);
-            alert('プロジェクトの読み込みに失敗しました。\nファイルが壊れている可能性があります。');
-        }
+        void restoreProject(data);
     }, (err) => {
         console.error('Load error:', err);
         alert('プロジェクトの読み込みに失敗しました。\nファイルが壊れている可能性があります。');
     });
+}
+
+async function restoreProject(data: any): Promise<void> {
+    try {
+        if (data.version !== '1.0') {
+            console.warn('Different project version:', data.version);
+            if (!confirm(`プロジェクトのバージョンが異なります (${data.version})。\n読み込みを続行しますか？`)) return;
+        }
+
+        const loadedClips: Clip[] = Array.isArray(data.clips) ? data.clips : [];
+        audioEngine.stop();
+        for (const clip of clips) {
+            if (clip.src?.startsWith('blob:')) URL.revokeObjectURL(clip.src);
+            if (clip.type === 'audio') audioEngine.remove(clip.id);
+        }
+        await restoreMediaSources(loadedClips);
+        await Promise.all(
+            loadedClips
+                .filter(clip => clip.type === 'audio')
+                .map(clip =>
+                    audioEngine.prepare(clip).catch(err => {
+                        console.error(`Failed to prepare audio clip ${clip.id}:`, err);
+                    })
+                )
+        );
+        clips = loadedClips;
+
+        currentProjectName = data.projectName || '無題';
+        if (data.config) {
+            if (data.config.bgColor) {
+                CONFIG.bgColor = data.config.bgColor;
+                bgColorPicker.value = CONFIG.bgColor;
+            }
+            if (data.config.resolution) {
+                CONFIG.resolution = data.config.resolution;
+                canvas.width = CONFIG.resolution.width;
+                canvas.height = CONFIG.resolution.height;
+                resolutionSelect.value = `${CONFIG.resolution.width}x${CONFIG.resolution.height}`;
+            }
+            if (data.config.fps) {
+                CONFIG.fps = data.config.fps;
+                fpsSelect.value = String(CONFIG.fps);
+            }
+            if (data.config.layerCount) {
+                CONFIG.layerCount = data.config.layerCount;
+                currentLayerCount = data.config.layerCount;
+                layerCountInput.value = String(CONFIG.layerCount);
+            }
+        }
+
+        currentFrame = data.currentFrame || 0;
+        audioEngine.seek(currentFrame, playbackController.isPlaying);
+        selectedId = data.selectedId || null;
+        if (data.layerCount) currentLayerCount = data.layerCount;
+        hiddenLayers = Array.isArray(data.hiddenLayers) ? new Set<number>(data.hiddenLayers) : new Set<number>();
+
+        setOverlapPrevention(true);
+        updateTimelineDuration();
+        syncUI();
+        drawPreview();
+        drawTimeline();
+        console.log(`Project loaded successfully! (${clips.length} clips)`);
+        alert(`プロジェクトを読み込みました！\nクリップ数: ${clips.length}`);
+    } catch (err) {
+        console.error('Load error:', err);
+        alert('プロジェクトの読み込みに失敗しました。\nファイルが壊れている可能性があります。');
+    }
+}
+
+async function restoreMediaSources(loadedClips: Clip[]): Promise<void> {
+    const mediaGroups = new Map<string, Clip[]>();
+    for (const clip of loadedClips) {
+        if (clip.type !== 'media' && clip.type !== 'image' && clip.type !== 'audio') continue;
+        clip.src = '';
+        if (!clip.mediaId) continue;
+        const group = mediaGroups.get(clip.mediaId) || [];
+        group.push(clip);
+        mediaGroups.set(clip.mediaId, group);
+    }
+
+    const missing: Array<{ id: string; clips: Clip[] }> = [];
+    for (const [id, groupedClips] of mediaGroups) {
+        const record = await getMedia(id);
+        if (!record) {
+            missing.push({ id, clips: groupedClips });
+            continue;
+        }
+        for (const clip of groupedClips) {
+            clip.src = URL.createObjectURL(record.blob);
+            clip.mediaName = record.name;
+            clip.mediaType = record.type;
+            clip.fileName = record.name;
+        }
+    }
+
+    if (missing.length === 0) return;
+    const missingNames = missing.map(item => item.clips[0].fileName || item.clips[0].mediaName || '名前不明').join('\n');
+    if (!confirm(`次のメディアが見つかりません。\n${missingNames}\n\nOK: 再選択する / キャンセル: スキップする`)) return;
+
+    for (const item of missing) {
+        const files = await selectMediaFiles(false);
+        const expectedName = item.clips[0].fileName || item.clips[0].mediaName;
+        const file = files?.find(candidate => candidate.name === expectedName);
+        if (!file || !isSupportedMediaFile(file)) continue;
+
+        const mediaId = createMediaId();
+        const mediaType = getMediaMimeType(file);
+        await saveMedia({
+            id: mediaId,
+            name: file.name,
+            size: file.size,
+            type: mediaType,
+            blob: file,
+            createdAt: new Date().toISOString(),
+        });
+        for (const clip of item.clips) {
+            clip.mediaId = mediaId;
+            clip.mediaName = file.name;
+            clip.mediaType = mediaType;
+            clip.fileName = file.name;
+            clip.src = URL.createObjectURL(file);
+        }
+    }
 }
 
 // プロジェクト保存/読み込みのイベント
@@ -1285,7 +1532,10 @@ function executeSaveProject(fileName: string): void {
         const projectData = {
             version: '1.0',
             projectName: fileName,
-            clips: clips,
+            clips: clips.map(clip => {
+                const { src, ...savedClip } = clip;
+                return savedClip;
+            }),
             config: {
                 preventOverlap: CONFIG.preventOverlap,
                 bgColor: CONFIG.bgColor,
@@ -1296,6 +1546,7 @@ function executeSaveProject(fileName: string): void {
             currentFrame: currentFrame,
             selectedId: selectedId,
             layerCount: currentLayerCount,
+            hiddenLayers: Array.from(hiddenLayers),
             timestamp: new Date().toISOString(),
         };
 

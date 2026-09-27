@@ -42,11 +42,15 @@ export class ThreePreviewRenderer {
         this.setDefaultCamera();
     }
 
-    render(clips: Clip[], frame: number, selectedId: string | null, backgroundColor: string): void {
+    render(clips: Clip[], frame: number, selectedId: string | null, backgroundColor: string, hiddenLayers: Set<number> = new Set()): void {
         this.scene.background = new THREE.Color(backgroundColor);
         const visibleIds = new Set<string>();
 
         for (const clip of clips) {
+            // 非表示レイヤーはスキップ
+            if (hiddenLayers.has(clip.layerId)) {
+                continue;
+            }
             if (!isVisualClip(clip) || frame < clip.startFrame || frame >= clip.startFrame + clip.duration) {
                 continue;
             }
@@ -74,7 +78,8 @@ export class ThreePreviewRenderer {
             }
         }
 
-        this.updateCamera(clips, frame);
+        // 非表示レイヤーのカメラ系クリップは updateCamera で無視する
+        this.updateCamera(clips, frame, hiddenLayers);
         this.updateCameraHandle(clips, frame, selectedId);
         const selectedMesh = selectedId ? this.meshes.get(selectedId) : undefined;
         const selectedExempt = Boolean(selectedMesh?.visible && clips.find(clip => clip.id === selectedId)?.cameraDisabled);
@@ -95,7 +100,7 @@ export class ThreePreviewRenderer {
         this.renderer.clearDepth();
         this.renderer.render(this.cameraHandleScene, this.defaultCamera);
         this.renderer.autoClear = previousAutoClear;
-        this.updateCamera(clips, frame);
+        this.updateCamera(clips, frame, hiddenLayers);
     }
 
     resize(width: number, height: number): void {
@@ -110,8 +115,14 @@ export class ThreePreviewRenderer {
         this.setGridSize();
     }
 
-    pick(clientX: number, clientY: number, selectedId: string | null): string | null {
+    pick(clientX: number, clientY: number): string | null {
         this.setPointer(clientX, clientY);
+        this.raycaster.setFromCamera(this.pointer, this.defaultCamera);
+        const cameraHit = this.raycaster.intersectObjects(
+            [...this.cameraHandles.values()].filter(handle => handle.visible),
+            false
+        )[0];
+        if (cameraHit) return cameraHit.object.userData.clipId as string;
 
         this.raycaster.setFromCamera(this.pointer, this.camera);
         const regularHits = this.raycaster.intersectObjects(
@@ -124,13 +135,7 @@ export class ThreePreviewRenderer {
             false
         ).sort((a, b) => a.distance - b.distance || b.object.renderOrder - a.object.renderOrder);
         const hit = exemptHits[0] || regularHits[0];
-        if (hit) return hit.object.userData.clipId as string;
-
-        const selectedHandle = selectedId ? this.cameraHandles.get(selectedId) : undefined;
-        if (!selectedHandle?.visible) return null;
-        this.raycaster.setFromCamera(this.pointer, this.defaultCamera);
-        const cameraHit = this.raycaster.intersectObject(selectedHandle, false)[0];
-        return cameraHit?.object.userData.clipId as string | undefined ?? null;
+        return hit?.object.userData.clipId as string | undefined ?? null;
     }
 
     pointerToClipPosition(clientX: number, clientY: number, clip: Clip): { x: number; y: number } | null {
@@ -148,8 +153,8 @@ export class ThreePreviewRenderer {
         clip.cameraHorizontalAngle = (clip.cameraHorizontalAngle || 0) - deltaX * 0.25;
         clip.cameraVerticalAngle = THREE.MathUtils.clamp(
             (clip.cameraVerticalAngle || 0) + deltaY * 0.25,
-            -89,
-            89
+            -1440,
+            1440
         );
     }
 
@@ -162,16 +167,30 @@ export class ThreePreviewRenderer {
     private ensureMesh(clip: Clip): void {
         const signature = JSON.stringify([
             clip.type, clip.shapeType, clip.width, clip.height, clip.fillColor, clip.strokeColor,
-            clip.strokeWidth, clip.text, clip.fontSize, clip.fontFamily, clip.color,
+            clip.strokeWidth, clip.text, clip.fontSize, clip.fontFamily, clip.color, clip.src,
         ]);
         if (this.signatures.get(clip.id) === signature) return;
 
         const previous = this.meshes.get(clip.id);
+        let reusableTexture: THREE.Texture | undefined;
         if (previous) {
             this.scene.remove(previous);
+            if (isImageClip(clip) && previous.userData.isImageMesh && previous.userData.mediaSrc === clip.src) {
+                const previousMaterial = previous.material as THREE.MeshBasicMaterial;
+                reusableTexture = previousMaterial.map || undefined;
+                previousMaterial.map = null;
+            }
             this.disposeMesh(previous);
         }
-        const mesh = clip.type === 'text' ? this.createTextMesh(clip) : this.createShapeMesh(clip);
+        let mesh: THREE.Mesh;
+        if (clip.type === 'text') mesh = this.createTextMesh(clip);
+        else if (clip.type === 'image' || (clip.type === 'media' && clip.mediaType?.startsWith('image/'))) {
+            mesh = this.createImageMesh(clip, reusableTexture);
+        } else mesh = this.createShapeMesh(clip);
+        if (isImageClip(clip)) {
+            mesh.userData.isImageMesh = true;
+            mesh.userData.mediaSrc = clip.src;
+        }
         mesh.userData.clipId = clip.id;
         this.meshes.set(clip.id, mesh);
         this.signatures.set(clip.id, signature);
@@ -201,6 +220,35 @@ export class ThreePreviewRenderer {
             const edges = new THREE.LineSegments(edgeGeometry, edgeMaterial);
             edges.renderOrder = clip.layerId;
             mesh.add(edges);
+        }
+        return mesh;
+    }
+
+    private createImageMesh(clip: Clip, reusableTexture?: THREE.Texture): THREE.Mesh {
+        const material = new THREE.MeshBasicMaterial({
+            color: clip.src ? '#ffffff' : '#888888',
+            side: THREE.DoubleSide,
+            depthWrite: true,
+            depthFunc: THREE.LessEqualDepth,
+            alphaTest: 0.5,
+            map: reusableTexture || null,
+        });
+        const mesh = new THREE.Mesh(
+            new THREE.PlaneGeometry(clip.width || 100, clip.height || 100),
+            material
+        );
+        if (clip.src && !reusableTexture) {
+            const texture = new THREE.TextureLoader().load(clip.src, () => {
+                const currentMaterial = this.meshes.get(clip.id)?.material as THREE.MeshBasicMaterial | undefined;
+                if (currentMaterial?.map !== texture) {
+                    texture.dispose();
+                    return;
+                }
+                currentMaterial.needsUpdate = true;
+                this.renderer.render(this.scene, this.camera);
+            });
+            texture.colorSpace = THREE.SRGBColorSpace;
+            material.map = texture;
         }
         return mesh;
     }
@@ -240,9 +288,12 @@ export class ThreePreviewRenderer {
         return new THREE.Mesh(new THREE.PlaneGeometry(textureCanvas.width, textureCanvas.height), material);
     }
 
-    private updateCamera(clips: Clip[], frame: number): void {
+    private updateCamera(clips: Clip[], frame: number, hiddenLayers: Set<number>): void {
         const active = clips
-            .filter(clip => frame >= clip.startFrame && frame < clip.startFrame + clip.duration)
+            .filter(clip => {
+                if (hiddenLayers.has(clip.layerId)) return false;
+                return frame >= clip.startFrame && frame < clip.startFrame + clip.duration;
+            })
             .sort((a, b) => a.layerId - b.layerId);
         const positionCameras = active.filter(clip => clip.type === 'cameraPosition');
         const orbitCameras = active.filter(clip => clip.type === 'cameraOrbit');
@@ -276,15 +327,27 @@ export class ThreePreviewRenderer {
                 horizontal: sum.horizontal + (clip.cameraHorizontalAngle || 0),
                 distance: sum.distance + (clip.cameraOrbitDistance || 0),
             }), { vertical: 0, horizontal: 0, distance: 0 });
+            // 回転制御は複数ある場合、座標を合成して注視点にする。
             const controls = active.filter(clip => clip.type === 'rotationControl');
-            const control = controls[controls.length - 1];
-            const centerX = control?.x || 0;
-            const centerY = control?.y || 0;
-            const centerZ = control?.z || 0;
+            const center = controls.reduce((sum, clip) => ({
+                x: sum.x + clip.x,
+                y: sum.y + clip.y,
+                z: sum.z + clip.z,
+            }), { x: 0, y: 0, z: 0 });
+            const centerX = center.x;
+            const centerY = center.y;
+            const centerZ = center.z;
             const radius = Math.max(1, this.defaultCameraDistance() + orbit.distance);
-            const vertical = THREE.MathUtils.degToRad(THREE.MathUtils.clamp(orbit.vertical, -89, 89));
+            const verticalAngle = THREE.MathUtils.clamp(orbit.vertical, -1440, 1440);
+            const vertical = THREE.MathUtils.degToRad(verticalAngle);
             const horizontal = THREE.MathUtils.degToRad(orbit.horizontal);
             const horizontalRadius = radius * Math.cos(vertical);
+            const wrappedVertical = ((verticalAngle % 360) + 360) % 360;
+            this.camera.up.set(
+                0,
+                wrappedVertical > 90 && wrappedVertical < 270 ? -1 : 1,
+                0
+            );
             this.camera.position.set(
                 centerX + horizontalRadius * Math.sin(horizontal),
                 -(centerY + radius * Math.sin(vertical)),
@@ -319,15 +382,10 @@ export class ThreePreviewRenderer {
             this.cameraHandleScene.add(handle);
         }
 
-        const baseline = this.defaultCameraDistance();
-        if (selected.type === 'cameraPosition') {
-            handle.position.set(selected.x, -selected.y, selected.z);
-        } else {
-            const active = clips.filter(clip => frame >= clip.startFrame && frame < clip.startFrame + clip.duration);
-            const controls = active.filter(clip => clip.type === 'rotationControl').sort((a, b) => a.layerId - b.layerId);
-            const center = controls[controls.length - 1];
-            handle.position.set(center?.x || 0, -(center?.y || 0), center?.z || 0);
-        }
+        // cameraPosition / cameraOrbit ともに、ひし形は常にプレビュー中心に固定する。
+        // z を反映すると defaultCamera からの距離が変わり、見た目の大きさが変わってしまう。
+        // そのため、ひし形の位置は常に (0, 0, 0) に固定する。
+        handle.position.set(0, 0, 0);
         handle.visible = true;
     }
 
@@ -392,7 +450,12 @@ export class ThreePreviewRenderer {
 }
 
 function isVisualClip(clip: Clip): boolean {
-    return clip.type === 'text' || clip.type === 'shape';
+    return clip.type === 'text' || clip.type === 'shape' || clip.type === 'image' ||
+        (clip.type === 'media' && Boolean(clip.mediaType?.startsWith('image/')));
+}
+
+function isImageClip(clip: Clip): boolean {
+    return clip.type === 'image' || (clip.type === 'media' && Boolean(clip.mediaType?.startsWith('image/')));
 }
 
 function createShapeGeometry(clip: Clip, width: number, height: number): THREE.BufferGeometry {
