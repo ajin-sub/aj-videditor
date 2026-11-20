@@ -34,10 +34,9 @@ interface NumberInputConfig {
     min: number;
     max: number;
     default: number;
-    stages: number[] | null;
-    getIsDragging: () => boolean;
-    updateSliderRangeFn: (value: number) => void;
+    updateSliderRangeFn?: (value: number) => void;
     onCommit: (value: number) => void;
+    onSliderInput?: () => void;
 }
 
 export function setupNumberInput(
@@ -71,6 +70,13 @@ export function setupNumberInput(
         }
         commitNumberInput(input, slider, config);
     });
+
+    if (slider !== input) {
+        slider.addEventListener('input', () => {
+            input.value = slider.value;
+            config.onSliderInput?.();
+        });
+    }
 }
 
 function commitNumberInput(
@@ -86,12 +92,9 @@ function commitNumberInput(
 
     val = Math.max(config.min, Math.min(config.max, val));
 
+    config.updateSliderRangeFn?.(val);
     slider.value = String(val);
     input.value = String(val);
-
-    if (config.stages) {
-        config.updateSliderRangeFn(val);
-    }
 
     config.onCommit(val);
     input.blur();

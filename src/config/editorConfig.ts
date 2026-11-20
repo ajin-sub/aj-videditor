@@ -10,6 +10,13 @@ export const DEFAULT_LAYER_COUNT = 10;
 export const BASE_PIXELS_PERSEC = 40;
 export const STORAGE_KEY = 'aj-videditor-settings';
 
+export const AUDIO_VOLUME = {
+    minPercent: -1600,
+    maxPercent: 1600,
+    defaultPercent: 100,
+} as const;
+export const AUDIO_VOLUME_PERCENT_SCALE = 100;
+
 export const CONFIG = {
     preventOverlap: true,
     theme: 'white',
@@ -42,6 +49,7 @@ export const SLIDER_STAGES = {
     size: [100, 200, 400, 800, 1600, 3200],
     stroke: [100, 200, 400, 800, 1600, 3200],
     fontSize: [100, 200, 400, 800, 1600, 3200],
+    audioVolume: [50, 100, 200, 400, 800, 1600],
 };
 
 export const DEFAULT_CLIP_DURATION = 3 * CONFIG.fps;

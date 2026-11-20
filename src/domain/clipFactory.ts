@@ -1,4 +1,5 @@
 import type { Clip, ClipType } from '../types/clip';
+import { AUDIO_VOLUME, AUDIO_VOLUME_PERCENT_SCALE } from '../config/editorConfig';
 
 export function createClip(
     type: ClipType,
@@ -44,7 +45,9 @@ export function createClip(
     }
 
     if (type === 'image') return { ...baseClip, type, width: 100, height: 100 };
-    if (type === 'audio') return { ...baseClip, type, volume: 1 };
+    if (type === 'audio') {
+        return { ...baseClip, type, volume: AUDIO_VOLUME.defaultPercent / AUDIO_VOLUME_PERCENT_SCALE };
+    }
     if (type === 'media') return { ...baseClip, type };
     if (type === 'cameraPosition') return { ...baseClip, type };
     if (type === 'cameraOrbit') {

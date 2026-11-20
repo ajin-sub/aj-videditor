@@ -56,9 +56,6 @@ export function setupSettingsPanel(
         min: 1,
         max: 99,
         default: 10,
-        stages: null,
-        getIsDragging: () => false,
-        updateSliderRangeFn: () => undefined,
         onCommit: callbacks.setLayerCount,
     });
 

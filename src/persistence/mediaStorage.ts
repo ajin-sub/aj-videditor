@@ -33,6 +33,16 @@ export function getMedia(id: string): Promise<MediaRecord | undefined> {
     }));
 }
 
+export function deleteMedia(id: string): Promise<void> {
+    return openDatabase().then(database => new Promise((resolve, reject) => {
+        const transaction = database.transaction(STORE_NAME, 'readwrite');
+        transaction.objectStore(STORE_NAME).delete(id);
+        transaction.oncomplete = () => resolve();
+        transaction.onerror = () => reject(transaction.error);
+        transaction.onabort = () => reject(transaction.error);
+    }));
+}
+
 function openDatabase(): Promise<IDBDatabase> {
     if (databasePromise) return databasePromise;
 

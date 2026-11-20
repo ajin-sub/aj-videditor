@@ -2,6 +2,26 @@ import type { Clip } from '../types/clip';
 
 export type ResizeEdge = 'left' | 'right';
 
+export function getResizeEdgeAtPosition(
+    mouseX: number,
+    renderedWidth: number,
+    edgeWidth = 8
+): ResizeEdge | null {
+    if (renderedWidth <= 0 || mouseX < 0 || mouseX > renderedWidth) return null;
+
+    const distanceFromLeft = mouseX;
+    const distanceFromRight = renderedWidth - mouseX;
+    const nearLeft = distanceFromLeft <= edgeWidth;
+    const nearRight = distanceFromRight <= edgeWidth;
+
+    if (nearLeft && nearRight) {
+        return distanceFromLeft <= distanceFromRight ? 'left' : 'right';
+    }
+    if (nearLeft) return 'left';
+    if (nearRight) return 'right';
+    return null;
+}
+
 export interface TimelineResizeOptions {
     container: HTMLDivElement;
     paddingLeft: number;
@@ -29,6 +49,7 @@ export function createTimelineResize(options: TimelineResizeOptions): TimelineRe
     let resizing = false;
     let resizeClipId: string | null = null;
     let resizeEdge: ResizeEdge | null = null;
+    let pointerOffsetFrames = 0;
 
     const onResizeMove = (event: MouseEvent): void => {
         if (!resizing || !resizeClipId || !resizeEdge) return;
@@ -38,7 +59,7 @@ export function createTimelineResize(options: TimelineResizeOptions): TimelineRe
         const rect = options.container.getBoundingClientRect();
         const pixelsPerSecond = options.getPixelsPerSecond(options.container.clientWidth - 4);
         const mouseX = event.clientX - rect.left - options.paddingLeft + options.container.scrollLeft;
-        const mouseFrame = Math.round((mouseX / pixelsPerSecond) * options.fps());
+        const mouseFrame = Math.round((mouseX / pixelsPerSecond) * options.fps() - pointerOffsetFrames);
         const oldStart = clip.startFrame;
         const oldDuration = clip.duration;
         const endFrame = oldStart + oldDuration;
@@ -99,6 +120,7 @@ export function createTimelineResize(options: TimelineResizeOptions): TimelineRe
         resizing = false;
         resizeClipId = null;
         resizeEdge = null;
+        pointerOffsetFrames = 0;
         document.removeEventListener('mousemove', onResizeMove);
         document.removeEventListener('mouseup', onResizeEnd);
         document.removeEventListener('mouseleave', onResizeEnd);
@@ -114,6 +136,12 @@ export function createTimelineResize(options: TimelineResizeOptions): TimelineRe
         resizing = true;
         resizeClipId = clipId;
         resizeEdge = edge;
+        const rect = options.container.getBoundingClientRect();
+        const pixelsPerSecond = options.getPixelsPerSecond(options.container.clientWidth - 4);
+        const mouseX = event.clientX - rect.left - options.paddingLeft + options.container.scrollLeft;
+        const pointerFrame = (mouseX / pixelsPerSecond) * options.fps();
+        const edgeFrame = edge === 'left' ? clip.startFrame : clip.startFrame + clip.duration;
+        pointerOffsetFrames = pointerFrame - edgeFrame;
         options.setSelected(clipId);
         document.addEventListener('mousemove', onResizeMove);
         document.addEventListener('mouseup', onResizeEnd);

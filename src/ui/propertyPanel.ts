@@ -1,4 +1,5 @@
 import type { Clip, ShapeType } from '../types/clip';
+import { AUDIO_VOLUME, AUDIO_VOLUME_PERCENT_SCALE } from '../config/editorConfig';
 import {
     setupNumberInput,
     setupSliderDrag,
@@ -93,6 +94,7 @@ export interface PropertyPanelSyncOptions {
     isDraggingWidth: boolean;
     isDraggingHeight: boolean;
     isDraggingFontSize: boolean;
+    isDraggingAudioVolume: boolean;
     updateSliderRange: (slider: HTMLInputElement, value: number, stages: number[], isDragging: boolean) => void;
     updateSliderRangePositive: (slider: HTMLInputElement, value: number, stages: number[], isDragging: boolean) => void;
     coordStages: number[];
@@ -100,11 +102,13 @@ export interface PropertyPanelSyncOptions {
     sizeStages: number[];
     strokeStages: number[];
     fontSizeStages: number[];
+    audioVolumeStages: number[];
     setEnabled: (enabled: boolean) => void;
 }
 
 export function syncPropertyPanel(options: PropertyPanelSyncOptions): void {
     const { selected, inputs } = options;
+    const isVideo = isVideoClip(selected);
 
     if (selected && options.hasClips) {
         options.typeDisplay.textContent = selected.type === 'text'
@@ -113,6 +117,7 @@ export function syncPropertyPanel(options: PropertyPanelSyncOptions): void {
                 ? '図形'
                 : selected.type === 'image' ? `画像: ${selected.fileName || selected.mediaName || ''}`
                 : selected.type === 'audio' ? `音声: ${selected.mediaName || ''}`
+                : isVideo ? `動画: ${selected.mediaName || selected.fileName || ''}`
                 : selected.type === 'media' ? `メディア: ${selected.mediaName || ''}`
                 : selected.type === 'cameraPosition' ? 'カメラ - 位置・角度'
                     : selected.type === 'cameraOrbit' ? 'カメラ - 回り込み'
@@ -142,11 +147,23 @@ export function syncPropertyPanel(options: PropertyPanelSyncOptions): void {
             inputs.shapeWidthNumber.value = String(selected.width || 100);
             inputs.shapeHeightSlider.value = String(selected.height || 100);
             inputs.shapeHeightNumber.value = String(selected.height || 100);
-        } else if (selected.type === 'image') {
+        } else if (selected.type === 'image' || isVideo) {
             options.textProperties.style.display = 'none';
             options.shapeProperties.style.display = '';
             // 画像では寸法だけを編集できるよう Shape 固有項目を隠す。
             setShapeOnlyControlsVisible(options.shapeProperties, false);
+            options.updateSliderRangePositive(
+                inputs.shapeWidthSlider,
+                selected.width || 100,
+                options.sizeStages,
+                options.isDraggingWidth
+            );
+            options.updateSliderRangePositive(
+                inputs.shapeHeightSlider,
+                selected.height || 100,
+                options.sizeStages,
+                options.isDraggingHeight
+            );
             inputs.shapeWidthSlider.value = String(selected.width || 100);
             inputs.shapeWidthNumber.value = String(selected.width || 100);
             inputs.shapeHeightSlider.value = String(selected.height || 100);
@@ -158,10 +175,21 @@ export function syncPropertyPanel(options: PropertyPanelSyncOptions): void {
         options.cameraProperties.style.display = selected.type === 'cameraPosition' ||
             selected.type === 'cameraOrbit' || selected.type === 'rotationControl' || selected.type === 'fovControl' ? '' : 'none';
         const audioProperties = document.getElementById('audioProperties');
-        if (audioProperties) audioProperties.style.display = selected.type === 'audio' ? '' : 'none';
-        if (selected.type === 'audio') {
-            inputs.audioVolumeSlider.value = String(selected.volume ?? 1);
-            inputs.audioVolumeNumber.value = String(selected.volume ?? 1);
+        if (audioProperties) audioProperties.style.display = selected.type === 'audio' || isVideo ? '' : 'none';
+        if (selected.type === 'audio' || isVideo) {
+            const minGain = AUDIO_VOLUME.minPercent / AUDIO_VOLUME_PERCENT_SCALE;
+            const maxGain = AUDIO_VOLUME.maxPercent / AUDIO_VOLUME_PERCENT_SCALE;
+            const volumeGain = Math.max(minGain, Math.min(maxGain,
+                selected.volume ?? AUDIO_VOLUME.defaultPercent / AUDIO_VOLUME_PERCENT_SCALE));
+            const volumePercent = volumeGain * AUDIO_VOLUME_PERCENT_SCALE;
+            options.updateSliderRange(
+                inputs.audioVolumeSlider,
+                volumePercent,
+                options.audioVolumeStages,
+                options.isDraggingAudioVolume
+            );
+            inputs.audioVolumeSlider.value = String(volumePercent);
+            inputs.audioVolumeNumber.value = String(volumePercent);
         }
 
         inputs.xSlider.value = String(selected.x);
@@ -234,19 +262,26 @@ export function updateSelectedClip(
         inputs.strokeWidthNumber.value = String(selected.strokeWidth);
         inputs.shapeWidthNumber.value = String(selected.width);
         inputs.shapeHeightNumber.value = String(selected.height);
-    } else if (selected.type === 'image') {
+    } else if (selected.type === 'image' || isVideoClip(selected)) {
         selected.width = parseFloat(inputs.shapeWidthSlider.value) || 100;
         selected.height = parseFloat(inputs.shapeHeightSlider.value) || 100;
         inputs.shapeWidthNumber.value = String(selected.width);
         inputs.shapeHeightNumber.value = String(selected.height);
-    } else if (selected.type === 'audio') {
-        selected.volume = Math.max(0, Math.min(1, parseFloat(inputs.audioVolumeSlider.value) || 0));
-        inputs.audioVolumeSlider.value = String(selected.volume);
-        inputs.audioVolumeNumber.value = String(selected.volume);
+    }
+
+    if (selected.type === 'audio' || isVideoClip(selected)) {
+        const volumePercent = Math.max(
+            AUDIO_VOLUME.minPercent,
+            Math.min(AUDIO_VOLUME.maxPercent, parseFloat(inputs.audioVolumeSlider.value) || 0)
+        );
+        selected.volume = volumePercent / AUDIO_VOLUME_PERCENT_SCALE;
+        inputs.audioVolumeSlider.value = String(volumePercent);
+        inputs.audioVolumeNumber.value = String(volumePercent);
     }
 
     const positionEditable = selected.type === 'text' || selected.type === 'shape' ||
-        selected.type === 'image' || selected.type === 'cameraPosition' || selected.type === 'rotationControl';
+        selected.type === 'image' || isVideoClip(selected) ||
+        selected.type === 'cameraPosition' || selected.type === 'rotationControl';
     if (positionEditable) {
         selected.x = parseFloat(inputs.xSlider.value) || 0;
         selected.y = parseFloat(inputs.ySlider.value) || 0;
@@ -257,7 +292,7 @@ export function updateSelectedClip(
     }
 
     const rotationEditable = selected.type === 'text' || selected.type === 'shape' ||
-        selected.type === 'image' || selected.type === 'cameraPosition';
+        selected.type === 'image' || isVideoClip(selected) || selected.type === 'cameraPosition';
     if (rotationEditable) {
         selected.rotation = parseFloat(inputs.rotationSlider.value) || 0;
         selected.rotationX = parseFloat(inputs.rotationXSlider.value) || 0;
@@ -272,6 +307,10 @@ export function updateSelectedClip(
     onRender();
 }
 
+function isVideoClip(clip: Clip | null): boolean {
+    return clip?.type === 'media' && Boolean(clip.mediaType?.startsWith('video/'));
+}
+
 function setShapeOnlyControlsVisible(container: HTMLDivElement, visible: boolean): void {
     const shapeOnlyLabels = new Set(['Shape', 'Fill', 'Stroke', 'Stroke W']);
     container.querySelectorAll<HTMLElement>('.control-group').forEach(group => {
@@ -280,7 +319,7 @@ function setShapeOnlyControlsVisible(container: HTMLDivElement, visible: boolean
     });
 }
 
-export type SliderDragKey = 'x' | 'y' | 'z' | 'rotation' | 'rotationX' | 'rotationY' | 'cameraVerticalAngle' | 'cameraHorizontalAngle' | 'cameraOrbitDistance' | 'stroke' | 'width' | 'height' | 'fontSize';
+export type SliderDragKey = 'x' | 'y' | 'z' | 'rotation' | 'rotationX' | 'rotationY' | 'cameraVerticalAngle' | 'cameraHorizontalAngle' | 'cameraOrbitDistance' | 'stroke' | 'width' | 'height' | 'fontSize' | 'audioVolume';
 
 export interface PropertySliderOptions {
     xSlider: HTMLInputElement;
@@ -297,6 +336,7 @@ export interface PropertySliderOptions {
     shapeHeightSlider: HTMLInputElement;
     fontSizeSlider: HTMLInputElement;
     fontSizeNumber: HTMLInputElement;
+    audioVolumeSlider: HTMLInputElement;
     getSelected: () => Clip | null;
     setDragging: (key: SliderDragKey, isDragging: boolean) => void;
     coordStages: number[];
@@ -304,123 +344,87 @@ export interface PropertySliderOptions {
     strokeStages: number[];
     sizeStages: number[];
     fontSizeStages: number[];
+    audioVolumeStages: number[];
     onRender: () => void;
 }
 
 export function setupPropertySliderDrags(options: PropertySliderOptions): void {
-    setupSliderDrag(options.xSlider, () => options.setDragging('x', true), () => {
-        options.setDragging('x', false);
-        const selected = options.getSelected();
-        if (selected) {
-            updateSliderRange(options.xSlider, selected.x, options.coordStages, false);
-            options.onRender();
-        }
-    });
+    const dragConfigs: {
+        key: SliderDragKey;
+        slider: HTMLInputElement;
+        stages: number[];
+        getValue: (clip: Clip) => number;
+        positive?: boolean;
+        appliesTo?: (clip: Clip) => boolean;
+        onEnd?: (clip: Clip) => void;
+    }[] = [
+        { key: 'x', slider: options.xSlider, stages: options.coordStages, getValue: clip => clip.x },
+        { key: 'y', slider: options.ySlider, stages: options.coordStages, getValue: clip => clip.y },
+        { key: 'z', slider: options.zSlider, stages: options.coordStages, getValue: clip => clip.z },
+        { key: 'rotation', slider: options.rotationSlider, stages: options.rotationStages, getValue: clip => clip.rotation },
+        { key: 'rotationX', slider: options.rotationXSlider, stages: options.rotationStages, getValue: clip => clip.rotationX || 0 },
+        { key: 'rotationY', slider: options.rotationYSlider, stages: options.rotationStages, getValue: clip => clip.rotationY || 0 },
+        {
+            key: 'cameraVerticalAngle',
+            slider: options.cameraVerticalAngleSlider,
+            stages: options.rotationStages,
+            getValue: clip => clip.type === 'cameraOrbit' ? clip.cameraVerticalAngle || 0 : 0,
+            appliesTo: clip => clip.type === 'cameraOrbit',
+        },
+        {
+            key: 'cameraHorizontalAngle',
+            slider: options.cameraHorizontalAngleSlider,
+            stages: options.rotationStages,
+            getValue: clip => clip.type === 'cameraOrbit' ? clip.cameraHorizontalAngle || 0 : 0,
+            appliesTo: clip => clip.type === 'cameraOrbit',
+        },
+        {
+            key: 'cameraOrbitDistance',
+            slider: options.cameraOrbitDistanceSlider,
+            stages: options.coordStages,
+            getValue: clip => clip.type === 'cameraOrbit' ? clip.cameraOrbitDistance || 0 : 0,
+            appliesTo: clip => clip.type === 'cameraOrbit',
+        },
+        { key: 'stroke', slider: options.strokeWidthSlider, stages: options.strokeStages, getValue: clip => clip.strokeWidth || 0, positive: true },
+        { key: 'width', slider: options.shapeWidthSlider, stages: options.sizeStages, getValue: clip => clip.width || 100, positive: true },
+        { key: 'height', slider: options.shapeHeightSlider, stages: options.sizeStages, getValue: clip => clip.height || 100, positive: true },
+        {
+            key: 'fontSize',
+            slider: options.fontSizeSlider,
+            stages: options.fontSizeStages,
+            getValue: clip => clip.fontSize || 50,
+            positive: true,
+            onEnd: clip => { options.fontSizeNumber.value = String(clip.fontSize || 50); },
+        },
+        {
+            key: 'audioVolume',
+            slider: options.audioVolumeSlider,
+            stages: options.audioVolumeStages,
+            getValue: clip => (clip.volume ?? AUDIO_VOLUME.defaultPercent / AUDIO_VOLUME_PERCENT_SCALE) *
+                AUDIO_VOLUME_PERCENT_SCALE,
+            appliesTo: clip => clip.type === 'audio' || isVideoClip(clip),
+        },
+    ];
 
-    setupSliderDrag(options.ySlider, () => options.setDragging('y', true), () => {
-        options.setDragging('y', false);
-        const selected = options.getSelected();
-        if (selected) {
-            updateSliderRange(options.ySlider, selected.y, options.coordStages, false);
-            options.onRender();
-        }
-    });
-
-    setupSliderDrag(options.zSlider, () => options.setDragging('z', true), () => {
-        options.setDragging('z', false);
-        const selected = options.getSelected();
-        if (selected) {
-            updateSliderRange(options.zSlider, selected.z, options.coordStages, false);
-            options.onRender();
-        }
-    });
-
-    setupSliderDrag(options.rotationSlider, () => options.setDragging('rotation', true), () => {
-        options.setDragging('rotation', false);
-        const selected = options.getSelected();
-        if (selected) {
-            updateSliderRange(options.rotationSlider, selected.rotation, options.rotationStages, false);
-            options.onRender();
-        }
-    });
-
-    for (const [key, slider, getRotation] of [
-        ['rotationX', options.rotationXSlider, (clip: Clip) => clip.rotationX || 0],
-        ['rotationY', options.rotationYSlider, (clip: Clip) => clip.rotationY || 0],
-    ] as const) {
-        setupSliderDrag(slider, () => options.setDragging(key, true), () => {
-            options.setDragging(key, false);
-            const selected = options.getSelected();
-            if (selected) {
-                updateSliderRange(slider, getRotation(selected), options.rotationStages, false);
+    for (const config of dragConfigs) {
+        setupSliderDrag(
+            config.slider,
+            () => options.setDragging(config.key, true),
+            () => {
+                options.setDragging(config.key, false);
+                const selected = options.getSelected();
+                if (!selected || (config.appliesTo && !config.appliesTo(selected))) return;
+                const value = config.getValue(selected);
+                if (config.positive) {
+                    updateSliderRangePositive(config.slider, value, config.stages, false);
+                } else {
+                    updateSliderRange(config.slider, value, config.stages, false);
+                }
+                config.onEnd?.(selected);
                 options.onRender();
             }
-        });
+        );
     }
-
-    setupSliderDrag(options.cameraVerticalAngleSlider, () => options.setDragging('cameraVerticalAngle', true), () => {
-        options.setDragging('cameraVerticalAngle', false);
-        const selected = options.getSelected();
-        if (selected?.type === 'cameraOrbit') {
-            updateSliderRange(options.cameraVerticalAngleSlider, selected.cameraVerticalAngle || 0, options.rotationStages, false);
-            options.onRender();
-        }
-    });
-
-    setupSliderDrag(options.cameraHorizontalAngleSlider, () => options.setDragging('cameraHorizontalAngle', true), () => {
-        options.setDragging('cameraHorizontalAngle', false);
-        const selected = options.getSelected();
-        if (selected?.type === 'cameraOrbit') {
-            updateSliderRange(options.cameraHorizontalAngleSlider, selected.cameraHorizontalAngle || 0, options.rotationStages, false);
-            options.onRender();
-        }
-    });
-
-    setupSliderDrag(options.cameraOrbitDistanceSlider, () => options.setDragging('cameraOrbitDistance', true), () => {
-        options.setDragging('cameraOrbitDistance', false);
-        const selected = options.getSelected();
-        if (selected?.type === 'cameraOrbit') {
-            updateSliderRange(options.cameraOrbitDistanceSlider, selected.cameraOrbitDistance || 0, options.coordStages, false);
-            options.onRender();
-        }
-    });
-
-    setupSliderDrag(options.strokeWidthSlider, () => options.setDragging('stroke', true), () => {
-        options.setDragging('stroke', false);
-        const selected = options.getSelected();
-        if (selected) {
-            updateSliderRangePositive(options.strokeWidthSlider, selected.strokeWidth || 0, options.strokeStages, false);
-            options.onRender();
-        }
-    });
-
-    setupSliderDrag(options.shapeWidthSlider, () => options.setDragging('width', true), () => {
-        options.setDragging('width', false);
-        const selected = options.getSelected();
-        if (selected) {
-            updateSliderRangePositive(options.shapeWidthSlider, selected.width || 100, options.sizeStages, false);
-            options.onRender();
-        }
-    });
-
-    setupSliderDrag(options.shapeHeightSlider, () => options.setDragging('height', true), () => {
-        options.setDragging('height', false);
-        const selected = options.getSelected();
-        if (selected) {
-            updateSliderRangePositive(options.shapeHeightSlider, selected.height || 100, options.sizeStages, false);
-            options.onRender();
-        }
-    });
-
-    setupSliderDrag(options.fontSizeSlider, () => options.setDragging('fontSize', true), () => {
-        options.setDragging('fontSize', false);
-        const selected = options.getSelected();
-        if (selected) {
-            options.fontSizeNumber.value = String(selected.fontSize || 50);
-            updateSliderRangePositive(options.fontSizeSlider, selected.fontSize || 50, options.fontSizeStages, false);
-            options.onRender();
-        }
-    });
 }
 
 export interface PropertyNumberInputOptions {
@@ -433,6 +437,7 @@ export interface PropertyNumberInputOptions {
     preventOverlap: () => boolean;
     isOverlapping: (clip: Clip, ignoreId?: string) => boolean;
     resolveOverlap: (clip: Clip, ignoreId?: string) => void;
+    onValueChange: () => void;
     onPreviewRender: () => void;
     onTimelineRender: () => void;
     coordStages: number[];
@@ -440,28 +445,29 @@ export interface PropertyNumberInputOptions {
     sizeStages: number[];
     strokeStages: number[];
     fontSizeStages: number[];
+    audioVolumeStages: number[];
 }
 
 export function setupPropertyNumberInputs(options: PropertyNumberInputOptions): void {
     const { inputs } = options;
-    const numberConfigs = [
+    type NumberConfig = {
+        input: HTMLInputElement;
+        slider: HTMLInputElement;
+        min: number;
+        max: number;
+        defaultValue: number;
+        updateRange?: (value: number) => void;
+        onCommit?: (value: number) => void;
+    };
+
+    const numberConfigs: NumberConfig[] = [
         {
             input: inputs.xNumber,
             slider: inputs.xSlider,
             min: -8000,
             max: 8000,
             defaultValue: 0,
-            stages: options.coordStages,
-            getIsDragging: () => false,
             updateRange: (value: number) => updateSliderRange(inputs.xSlider, value, options.coordStages, false),
-            onCommit: (value: number) => {
-                const selected = options.getSelected();
-                if (!selected) return;
-                selected.x = value;
-                inputs.xSlider.value = String(value);
-                inputs.xNumber.value = String(value);
-                options.onPreviewRender();
-            },
         },
         {
             input: inputs.yNumber,
@@ -469,17 +475,7 @@ export function setupPropertyNumberInputs(options: PropertyNumberInputOptions): 
             min: -8000,
             max: 8000,
             defaultValue: 0,
-            stages: options.coordStages,
-            getIsDragging: () => false,
             updateRange: (value: number) => updateSliderRange(inputs.ySlider, value, options.coordStages, false),
-            onCommit: (value: number) => {
-                const selected = options.getSelected();
-                if (!selected) return;
-                selected.y = value;
-                inputs.ySlider.value = String(value);
-                inputs.yNumber.value = String(value);
-                options.onPreviewRender();
-            },
         },
         {
             input: inputs.zNumber,
@@ -487,17 +483,7 @@ export function setupPropertyNumberInputs(options: PropertyNumberInputOptions): 
             min: -8000,
             max: 8000,
             defaultValue: 0,
-            stages: options.coordStages,
-            getIsDragging: () => false,
             updateRange: (value: number) => updateSliderRange(inputs.zSlider, value, options.coordStages, false),
-            onCommit: (value: number) => {
-                const selected = options.getSelected();
-                if (!selected) return;
-                selected.z = value;
-                inputs.zSlider.value = String(value);
-                inputs.zNumber.value = String(value);
-                options.onPreviewRender();
-            },
         },
         {
             input: inputs.rotationNumber,
@@ -505,17 +491,7 @@ export function setupPropertyNumberInputs(options: PropertyNumberInputOptions): 
             min: -1440,
             max: 1440,
             defaultValue: 0,
-            stages: options.rotationStages,
-            getIsDragging: () => false,
             updateRange: (value: number) => updateSliderRange(inputs.rotationSlider, value, options.rotationStages, false),
-            onCommit: (value: number) => {
-                const selected = options.getSelected();
-                if (!selected) return;
-                selected.rotation = value;
-                inputs.rotationSlider.value = String(value);
-                inputs.rotationNumber.value = String(value);
-                options.onPreviewRender();
-            },
         },
         {
             input: inputs.rotationXNumber,
@@ -523,17 +499,7 @@ export function setupPropertyNumberInputs(options: PropertyNumberInputOptions): 
             min: -1440,
             max: 1440,
             defaultValue: 0,
-            stages: options.rotationStages,
-            getIsDragging: () => false,
             updateRange: (value: number) => updateSliderRange(inputs.rotationXSlider, value, options.rotationStages, false),
-            onCommit: (value: number) => {
-                const selected = options.getSelected();
-                if (!selected) return;
-                selected.rotationX = value;
-                inputs.rotationXSlider.value = String(value);
-                inputs.rotationXNumber.value = String(value);
-                options.onPreviewRender();
-            },
         },
         {
             input: inputs.rotationYNumber,
@@ -541,17 +507,7 @@ export function setupPropertyNumberInputs(options: PropertyNumberInputOptions): 
             min: -1440,
             max: 1440,
             defaultValue: 0,
-            stages: options.rotationStages,
-            getIsDragging: () => false,
             updateRange: (value: number) => updateSliderRange(inputs.rotationYSlider, value, options.rotationStages, false),
-            onCommit: (value: number) => {
-                const selected = options.getSelected();
-                if (!selected) return;
-                selected.rotationY = value;
-                inputs.rotationYSlider.value = String(value);
-                inputs.rotationYNumber.value = String(value);
-                options.onPreviewRender();
-            },
         },
         {
             input: options.startInput,
@@ -559,9 +515,6 @@ export function setupPropertyNumberInputs(options: PropertyNumberInputOptions): 
             min: 0,
             max: 600,
             defaultValue: 0,
-            stages: null,
-            getIsDragging: () => false,
-            updateRange: () => undefined,
             onCommit: (value: number) => {
                 const selected = options.getSelected();
                 if (!selected) return;
@@ -582,9 +535,6 @@ export function setupPropertyNumberInputs(options: PropertyNumberInputOptions): 
             min: 1,
             max: options.maxTimelineFrames,
             defaultValue: 90,
-            stages: null,
-            getIsDragging: () => false,
-            updateRange: () => undefined,
             onCommit: (value: number) => {
                 const selected = options.getSelected();
                 if (!selected) return;
@@ -607,17 +557,7 @@ export function setupPropertyNumberInputs(options: PropertyNumberInputOptions): 
             min: 0,
             max: 3200,
             defaultValue: 50,
-            stages: options.fontSizeStages,
-            getIsDragging: () => false,
             updateRange: (value: number) => updateSliderRangePositive(inputs.fontSizeSlider, value, options.fontSizeStages, false),
-            onCommit: (value: number) => {
-                const selected = options.getSelected();
-                if (!selected) return;
-                selected.fontSize = value;
-                inputs.fontSizeSlider.value = String(value);
-                inputs.fontSizeNumber.value = String(value);
-                options.onPreviewRender();
-            },
         },
         {
             input: inputs.strokeWidthNumber,
@@ -625,17 +565,7 @@ export function setupPropertyNumberInputs(options: PropertyNumberInputOptions): 
             min: 0,
             max: 3200,
             defaultValue: 0,
-            stages: options.strokeStages,
-            getIsDragging: () => false,
             updateRange: (value: number) => updateSliderRangePositive(inputs.strokeWidthSlider, value, options.strokeStages, false),
-            onCommit: (value: number) => {
-                const selected = options.getSelected();
-                if (!selected || selected.type !== 'shape') return;
-                selected.strokeWidth = value;
-                inputs.strokeWidthSlider.value = String(value);
-                inputs.strokeWidthNumber.value = String(value);
-                options.onPreviewRender();
-            },
         },
         {
             input: inputs.shapeWidthNumber,
@@ -643,17 +573,7 @@ export function setupPropertyNumberInputs(options: PropertyNumberInputOptions): 
             min: 0,
             max: 3200,
             defaultValue: 100,
-            stages: options.sizeStages,
-            getIsDragging: () => false,
             updateRange: (value: number) => updateSliderRangePositive(inputs.shapeWidthSlider, value, options.sizeStages, false),
-            onCommit: (value: number) => {
-                const selected = options.getSelected();
-                if (!selected || (selected.type !== 'shape' && selected.type !== 'image')) return;
-                selected.width = value;
-                inputs.shapeWidthSlider.value = String(value);
-                inputs.shapeWidthNumber.value = String(value);
-                options.onPreviewRender();
-            },
         },
         {
             input: inputs.shapeHeightNumber,
@@ -661,17 +581,15 @@ export function setupPropertyNumberInputs(options: PropertyNumberInputOptions): 
             min: 0,
             max: 3200,
             defaultValue: 100,
-            stages: options.sizeStages,
-            getIsDragging: () => false,
             updateRange: (value: number) => updateSliderRangePositive(inputs.shapeHeightSlider, value, options.sizeStages, false),
-            onCommit: (value: number) => {
-                const selected = options.getSelected();
-                if (!selected || (selected.type !== 'shape' && selected.type !== 'image')) return;
-                selected.height = value;
-                inputs.shapeHeightSlider.value = String(value);
-                inputs.shapeHeightNumber.value = String(value);
-                options.onPreviewRender();
-            },
+        },
+        {
+            input: inputs.audioVolumeNumber,
+            slider: inputs.audioVolumeSlider,
+            min: AUDIO_VOLUME.minPercent,
+            max: AUDIO_VOLUME.maxPercent,
+            defaultValue: AUDIO_VOLUME.defaultPercent,
+            updateRange: (value: number) => updateSliderRange(inputs.audioVolumeSlider, value, options.audioVolumeStages, false),
         },
         {
             input: inputs.cameraFovInput,
@@ -679,17 +597,6 @@ export function setupPropertyNumberInputs(options: PropertyNumberInputOptions): 
             min: 1,
             max: 179,
             defaultValue: 50,
-            stages: null,
-            getIsDragging: () => false,
-            updateRange: () => undefined,
-            onCommit: (value: number) => {
-                const selected = options.getSelected();
-                if (!selected || selected.type !== 'fovControl') return;
-                selected.cameraFov = value;
-                inputs.cameraFovSlider.value = String(value);
-                inputs.cameraFovInput.value = String(value);
-                options.onPreviewRender();
-            },
         },
         {
             input: inputs.cameraVerticalAngleNumber,
@@ -697,17 +604,7 @@ export function setupPropertyNumberInputs(options: PropertyNumberInputOptions): 
             min: -1440,
             max: 1440,
             defaultValue: 0,
-            stages: options.rotationStages,
-            getIsDragging: () => false,
             updateRange: (value: number) => updateSliderRange(inputs.cameraVerticalAngleSlider, value, options.rotationStages, false),
-            onCommit: (value: number) => {
-                const selected = options.getSelected();
-                if (!selected || selected.type !== 'cameraOrbit') return;
-                selected.cameraVerticalAngle = value;
-                inputs.cameraVerticalAngleSlider.value = String(value);
-                inputs.cameraVerticalAngleNumber.value = String(value);
-                options.onPreviewRender();
-            },
         },
         {
             input: inputs.cameraHorizontalAngleNumber,
@@ -715,17 +612,7 @@ export function setupPropertyNumberInputs(options: PropertyNumberInputOptions): 
             min: -1440,
             max: 1440,
             defaultValue: 0,
-            stages: options.rotationStages,
-            getIsDragging: () => false,
             updateRange: (value: number) => updateSliderRange(inputs.cameraHorizontalAngleSlider, value, options.rotationStages, false),
-            onCommit: (value: number) => {
-                const selected = options.getSelected();
-                if (!selected || selected.type !== 'cameraOrbit') return;
-                selected.cameraHorizontalAngle = value;
-                inputs.cameraHorizontalAngleSlider.value = String(value);
-                inputs.cameraHorizontalAngleNumber.value = String(value);
-                options.onPreviewRender();
-            },
         },
         {
             input: inputs.cameraOrbitDistanceNumber,
@@ -733,17 +620,7 @@ export function setupPropertyNumberInputs(options: PropertyNumberInputOptions): 
             min: -8000,
             max: 8000,
             defaultValue: 0,
-            stages: options.coordStages,
-            getIsDragging: () => false,
             updateRange: (value: number) => updateSliderRange(inputs.cameraOrbitDistanceSlider, value, options.coordStages, false),
-            onCommit: (value: number) => {
-                const selected = options.getSelected();
-                if (!selected || selected.type !== 'cameraOrbit') return;
-                selected.cameraOrbitDistance = value;
-                inputs.cameraOrbitDistanceSlider.value = String(value);
-                inputs.cameraOrbitDistanceNumber.value = String(value);
-                options.onPreviewRender();
-            },
         },
     ];
 
@@ -752,10 +629,9 @@ export function setupPropertyNumberInputs(options: PropertyNumberInputOptions): 
             min: config.min,
             max: config.max,
             default: config.defaultValue,
-            stages: config.stages,
-            getIsDragging: config.getIsDragging,
             updateSliderRangeFn: config.updateRange,
-            onCommit: config.onCommit,
+            onCommit: config.onCommit ?? options.onValueChange,
+            onSliderInput: options.onValueChange,
         });
     }
 }

@@ -22,7 +22,7 @@ export function getTotalTimelineWidth(
     paddingLeft: number,
     paddingRight: number
 ): number {
-    const usableWidth = containerWidth - paddingLeft - paddingRight;
-    const visibleDuration = getVisibleDuration(durationSeconds, zoom);
-    return (durationSeconds / visibleDuration) * usableWidth + paddingLeft + paddingRight;
+    const timelineContentWidth = durationSeconds * getPixelsPerSecond(zoom, basePixelsPerSecond) +
+        paddingLeft + paddingRight;
+    return Math.max(containerWidth, timelineContentWidth);
 }

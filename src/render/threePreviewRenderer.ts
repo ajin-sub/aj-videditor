@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import type { Clip } from '../types/clip';
+import { getCanvasDisplayRect } from '../utils/canvasCoordinates';
 
 export interface ThreePreviewRendererOptions {
     canvas: HTMLCanvasElement;
@@ -23,6 +24,11 @@ export class ThreePreviewRenderer {
     private readonly signatures = new Map<string, string>();
     private readonly selectionBox = new THREE.BoxHelper(new THREE.Object3D(), 0xffffff);
     private readonly grid = new THREE.Group();
+    private videoAudioHandler?: (clip: Clip, element: HTMLVideoElement) => void;
+    private readonly videoPlaybackFailures = new WeakSet<HTMLVideoElement>();
+    private lastFrame = 0;
+    private lastFps = 60;
+    private lastIsPlaying = false;
     private width: number;
     private height: number;
 
@@ -42,7 +48,22 @@ export class ThreePreviewRenderer {
         this.setDefaultCamera();
     }
 
-    render(clips: Clip[], frame: number, selectedId: string | null, backgroundColor: string, hiddenLayers: Set<number> = new Set()): void {
+    setVideoAudioHandler(handler: (clip: Clip, element: HTMLVideoElement) => void): void {
+        this.videoAudioHandler = handler;
+    }
+
+    render(
+        clips: Clip[],
+        frame: number,
+        selectedId: string | null,
+        backgroundColor: string,
+        hiddenLayers: Set<number> = new Set(),
+        fps = 60,
+        isPlaying = false
+    ): void {
+        this.lastFrame = frame;
+        this.lastFps = Math.max(1, fps);
+        this.lastIsPlaying = isPlaying;
         this.scene.background = new THREE.Color(backgroundColor);
         const visibleIds = new Set<string>();
 
@@ -68,6 +89,9 @@ export class ThreePreviewRenderer {
                 'XYZ'
             );
             mesh.visible = true;
+            if (isVideoClip(clip)) {
+                this.syncVideoPlayback(clip, mesh.userData.videoElement as HTMLVideoElement, frame, this.lastFps, isPlaying);
+            }
         }
 
         for (const [id, mesh] of this.meshes) {
@@ -75,6 +99,7 @@ export class ThreePreviewRenderer {
                 mesh.visible = false;
                 this.scene.remove(mesh);
                 this.cameraExemptScene.remove(mesh);
+                (mesh.userData.videoElement as HTMLVideoElement | undefined)?.pause();
             }
         }
 
@@ -164,9 +189,20 @@ export class ThreePreviewRenderer {
         for (const handle of this.cameraHandles.values()) this.disposeMesh(handle);
     }
 
+    removeClip(clipId: string): void {
+        const mesh = this.meshes.get(clipId);
+        if (mesh) {
+            this.scene.remove(mesh);
+            this.cameraExemptScene.remove(mesh);
+            this.disposeMesh(mesh);
+            this.meshes.delete(clipId);
+        }
+        this.signatures.delete(clipId);
+    }
+
     private ensureMesh(clip: Clip): void {
         const signature = JSON.stringify([
-            clip.type, clip.shapeType, clip.width, clip.height, clip.fillColor, clip.strokeColor,
+            clip.type, clip.mediaType, clip.shapeType, clip.width, clip.height, clip.fillColor, clip.strokeColor,
             clip.strokeWidth, clip.text, clip.fontSize, clip.fontFamily, clip.color, clip.src,
         ]);
         if (this.signatures.get(clip.id) === signature) return;
@@ -184,6 +220,7 @@ export class ThreePreviewRenderer {
         }
         let mesh: THREE.Mesh;
         if (clip.type === 'text') mesh = this.createTextMesh(clip);
+        else if (isVideoClip(clip)) mesh = this.createVideoMesh(clip);
         else if (clip.type === 'image' || (clip.type === 'media' && clip.mediaType?.startsWith('image/'))) {
             mesh = this.createImageMesh(clip, reusableTexture);
         } else mesh = this.createShapeMesh(clip);
@@ -251,6 +288,77 @@ export class ThreePreviewRenderer {
             material.map = texture;
         }
         return mesh;
+    }
+
+    private createVideoMesh(clip: Clip): THREE.Mesh {
+        const video = document.createElement('video');
+        video.preload = 'auto';
+        video.playsInline = true;
+        video.onerror = () => console.error(`Failed to load video: ${clip.mediaName || clip.fileName || clip.id}`);
+
+        const texture = new THREE.VideoTexture(video);
+        texture.colorSpace = THREE.SRGBColorSpace;
+        const material = new THREE.MeshBasicMaterial({
+            color: clip.src ? '#ffffff' : '#888888',
+            side: THREE.DoubleSide,
+            depthWrite: true,
+            depthFunc: THREE.LessEqualDepth,
+            map: clip.src ? texture : null,
+        });
+        const mesh = new THREE.Mesh(
+            new THREE.PlaneGeometry(clip.width || 100, clip.height || 100),
+            material
+        );
+        mesh.userData.videoElement = video;
+        mesh.userData.videoTexture = texture;
+
+        if (clip.src) {
+            video.addEventListener('loadedmetadata', () => {
+                if (this.meshes.get(clip.id) !== mesh || !mesh.visible) return;
+                this.syncVideoPlayback(clip, video, this.lastFrame, this.lastFps, this.lastIsPlaying);
+                texture.needsUpdate = true;
+                this.renderer.render(this.scene, this.camera);
+            }, { once: true });
+            video.addEventListener('seeked', () => {
+                if (this.meshes.get(clip.id) === mesh && mesh.visible) {
+                    texture.needsUpdate = true;
+                    this.renderer.render(this.scene, this.camera);
+                }
+            });
+            video.src = clip.src;
+            video.load();
+            this.videoAudioHandler?.(clip, video);
+        } else {
+            texture.dispose();
+        }
+
+        return mesh;
+    }
+
+    private syncVideoPlayback(
+        clip: Clip,
+        video: HTMLVideoElement,
+        frame: number,
+        fps: number,
+        isPlaying: boolean
+    ): void {
+        const targetTime = Math.max(0, (frame - clip.startFrame) / fps);
+        if (video.readyState >= HTMLMediaElement.HAVE_METADATA && Number.isFinite(video.duration)) {
+            const clampedTime = Math.min(video.duration, targetTime);
+            const seekThreshold = isPlaying ? 0.1 : 0.01;
+            if (Math.abs(video.currentTime - clampedTime) > seekThreshold) {
+                video.currentTime = clampedTime;
+            }
+        }
+
+        if (!isPlaying) {
+            video.pause();
+        } else if (video.paused && !this.videoPlaybackFailures.has(video)) {
+            void video.play().catch(error => {
+                this.videoPlaybackFailures.add(video);
+                console.error(`Failed to play video ${clip.mediaName || clip.fileName || clip.id}:`, error);
+            });
+        }
     }
 
     private createTextMesh(clip: Clip): THREE.Mesh {
@@ -390,10 +498,12 @@ export class ThreePreviewRenderer {
     }
 
     private setPointer(clientX: number, clientY: number): void {
-        const rect = this.options.canvas.getBoundingClientRect();
+        const displayRect = getCanvasDisplayRect(this.options.canvas);
+        if (!displayRect.width || !displayRect.height) return;
+
         this.pointer.set(
-            ((clientX - rect.left) / rect.width) * 2 - 1,
-            -((clientY - rect.top) / rect.height) * 2 + 1
+            ((clientX - displayRect.left) / displayRect.width) * 2 - 1,
+            -((clientY - displayRect.top) / displayRect.height) * 2 + 1
         );
     }
 
@@ -437,6 +547,13 @@ export class ThreePreviewRenderer {
     }
 
     private disposeMesh(mesh: THREE.Mesh): void {
+        const video = mesh.userData.videoElement as HTMLVideoElement | undefined;
+        if (video) {
+            video.pause();
+            video.onerror = null;
+            video.removeAttribute('src');
+            video.load();
+        }
         mesh.traverse(object => {
             if (!(object instanceof THREE.Mesh || object instanceof THREE.LineSegments)) return;
             object.geometry.dispose();
@@ -451,11 +568,17 @@ export class ThreePreviewRenderer {
 
 function isVisualClip(clip: Clip): boolean {
     return clip.type === 'text' || clip.type === 'shape' || clip.type === 'image' ||
-        (clip.type === 'media' && Boolean(clip.mediaType?.startsWith('image/')));
+        (clip.type === 'media' && Boolean(
+            clip.mediaType?.startsWith('image/') || clip.mediaType?.startsWith('video/')
+        ));
 }
 
 function isImageClip(clip: Clip): boolean {
     return clip.type === 'image' || (clip.type === 'media' && Boolean(clip.mediaType?.startsWith('image/')));
+}
+
+function isVideoClip(clip: Clip): boolean {
+    return clip.type === 'media' && Boolean(clip.mediaType?.startsWith('video/'));
 }
 
 function createShapeGeometry(clip: Clip, width: number, height: number): THREE.BufferGeometry {

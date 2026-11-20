@@ -48,6 +48,12 @@ function setupNumberInput(input, slider, config) {
     }
     commitNumberInput(input, slider, config);
   });
+  if (slider !== input) {
+    slider.addEventListener("input", () => {
+      input.value = slider.value;
+      config.onSliderInput?.();
+    });
+  }
 }
 function commitNumberInput(input, slider, config) {
   let val = parseFloat(input.value);
@@ -55,11 +61,9 @@ function commitNumberInput(input, slider, config) {
     val = config.default;
   }
   val = Math.max(config.min, Math.min(config.max, val));
+  config.updateSliderRangeFn?.(val);
   slider.value = String(val);
   input.value = String(val);
-  if (config.stages) {
-    config.updateSliderRangeFn(val);
-  }
   config.onCommit(val);
   input.blur();
 }
@@ -166,6 +170,56 @@ function findAvailableLayer(clips2, startFrame, duration, layerCount) {
   return null;
 }
 
+// src/config/editorConfig.ts
+var DEFAULT_FONT = '"Hiragino Sans", "Microsoft YaHei", sans-serif';
+var TIMELINE_HEIGHT = 32;
+var TIMELINE_PADDING_LEFT = 80;
+var TIMELINE_PADDING_RIGHT = 20;
+var TIMELINE_HEADER_HEIGHT = 28;
+var MAX_LAYERS = 99;
+var DEFAULT_LAYER_COUNT = 10;
+var BASE_PIXELS_PERSEC = 40;
+var STORAGE_KEY = "aj-videditor-settings";
+var AUDIO_VOLUME = {
+  minPercent: -1600,
+  maxPercent: 1600,
+  defaultPercent: 100
+};
+var AUDIO_VOLUME_PERCENT_SCALE = 100;
+var CONFIG = {
+  preventOverlap: true,
+  theme: "white",
+  bgColor: "#000000",
+  layerCount: DEFAULT_LAYER_COUNT,
+  resolution: { width: 1920, height: 1080 },
+  fps: 60,
+  text_wheel_step: 3
+};
+var CLIP_COLORS = {
+  text: "#0065d8",
+  shape: "#ff0055",
+  image: "#16a085",
+  audio: "#f0a128",
+  media: "#16a085",
+  cameraPosition: "#29f078",
+  cameraOrbit: "#00b8a9",
+  rotationControl: "#e2a900",
+  fovControl: "#d15ce8"
+};
+function getClipColor(type) {
+  return CLIP_COLORS[type] || "#888888";
+}
+var SLIDER_STAGES = {
+  coord: [500, 1e3, 2e3, 4e3, 8e3],
+  rotation: [180, 360, 720, 1440],
+  size: [100, 200, 400, 800, 1600, 3200],
+  stroke: [100, 200, 400, 800, 1600, 3200],
+  fontSize: [100, 200, 400, 800, 1600, 3200],
+  audioVolume: [50, 100, 200, 400, 800, 1600]
+};
+var DEFAULT_CLIP_DURATION = 3 * CONFIG.fps;
+var MAX_TIMELINE_FRAMES = 60 * 60 * CONFIG.fps;
+
 // src/domain/clipFactory.ts
 function createClip(type, id, layerId, startFrame, duration, defaultFont) {
   const baseClip = {
@@ -202,8 +256,9 @@ function createClip(type, id, layerId, startFrame, duration, defaultFont) {
   }
   if (type === "image")
     return { ...baseClip, type, width: 100, height: 100 };
-  if (type === "audio")
-    return { ...baseClip, type, volume: 1 };
+  if (type === "audio") {
+    return { ...baseClip, type, volume: AUDIO_VOLUME.defaultPercent / AUDIO_VOLUME_PERCENT_SCALE };
+  }
   if (type === "media")
     return { ...baseClip, type };
   if (type === "cameraPosition")
@@ -13543,6 +13598,58 @@ var LineSegments = class extends Line {
       warn("LineSegments.computeLineDistances(): Computation only possible with non-indexed BufferGeometry.");
     }
     return this;
+  }
+};
+var VideoTexture = class extends Texture {
+  /**
+   * Constructs a new video texture.
+   *
+   * @param {HTMLVideoElement} video - The video element to use as a data source for the texture.
+   * @param {number} [mapping=Texture.DEFAULT_MAPPING] - The texture mapping.
+   * @param {number} [wrapS=ClampToEdgeWrapping] - The wrapS value.
+   * @param {number} [wrapT=ClampToEdgeWrapping] - The wrapT value.
+   * @param {number} [magFilter=LinearFilter] - The mag filter value.
+   * @param {number} [minFilter=LinearFilter] - The min filter value.
+   * @param {number} [format=RGBAFormat] - The texture format.
+   * @param {number} [type=UnsignedByteType] - The texture type.
+   * @param {number} [anisotropy=Texture.DEFAULT_ANISOTROPY] - The anisotropy value.
+   */
+  constructor(video, mapping, wrapS, wrapT, magFilter = LinearFilter, minFilter = LinearFilter, format, type, anisotropy) {
+    super(video, mapping, wrapS, wrapT, magFilter, minFilter, format, type, anisotropy);
+    this.isVideoTexture = true;
+    this.generateMipmaps = false;
+    this._requestVideoFrameCallbackId = 0;
+    const scope = this;
+    function updateVideo() {
+      scope.needsUpdate = true;
+      scope._requestVideoFrameCallbackId = video.requestVideoFrameCallback(updateVideo);
+    }
+    if ("requestVideoFrameCallback" in video) {
+      this._requestVideoFrameCallbackId = video.requestVideoFrameCallback(updateVideo);
+    }
+  }
+  clone() {
+    return new this.constructor(this.image).copy(this);
+  }
+  /**
+   * This method is called automatically by the renderer and sets {@link Texture#needsUpdate}
+   * to `true` every time a new frame is available.
+   *
+   * Only relevant if `requestVideoFrameCallback` is not supported in the browser.
+   */
+  update() {
+    const video = this.image;
+    const hasVideoFrameCallback = "requestVideoFrameCallback" in video;
+    if (hasVideoFrameCallback === false && video.readyState >= video.HAVE_CURRENT_DATA) {
+      this.needsUpdate = true;
+    }
+  }
+  dispose() {
+    if (this._requestVideoFrameCallbackId !== 0) {
+      this.source.data.cancelVideoFrameCallback(this._requestVideoFrameCallbackId);
+      this._requestVideoFrameCallbackId = 0;
+    }
+    super.dispose();
   }
 };
 var CubeTexture = class extends Texture {
@@ -31086,6 +31193,29 @@ var WebGLRenderer = class {
   }
 };
 
+// src/utils/canvasCoordinates.ts
+function getCanvasDisplayRect(canvas2) {
+  const rect = canvas2.getBoundingClientRect();
+  const canvasAspect = canvas2.width / canvas2.height;
+  const rectAspect = rect.width / rect.height;
+  if (canvasAspect > rectAspect) {
+    const height = rect.width / canvasAspect;
+    return {
+      left: rect.left,
+      top: rect.top + (rect.height - height) / 2,
+      width: rect.width,
+      height
+    };
+  }
+  const width = rect.height * canvasAspect;
+  return {
+    left: rect.left + (rect.width - width) / 2,
+    top: rect.top,
+    width,
+    height: rect.height
+  };
+}
+
 // src/render/threePreviewRenderer.ts
 var ThreePreviewRenderer = class {
   constructor(options) {
@@ -31102,6 +31232,10 @@ var ThreePreviewRenderer = class {
     this.signatures = /* @__PURE__ */ new Map();
     this.selectionBox = new BoxHelper(new Object3D(), 16777215);
     this.grid = new Group();
+    this.videoPlaybackFailures = /* @__PURE__ */ new WeakSet();
+    this.lastFrame = 0;
+    this.lastFps = 60;
+    this.lastIsPlaying = false;
     this.width = options.width;
     this.height = options.height;
     this.renderer = new WebGLRenderer({ canvas: options.canvas, antialias: true });
@@ -31116,7 +31250,13 @@ var ThreePreviewRenderer = class {
     this.setGridSize();
     this.setDefaultCamera();
   }
-  render(clips2, frame, selectedId2, backgroundColor, hiddenLayers2 = /* @__PURE__ */ new Set()) {
+  setVideoAudioHandler(handler) {
+    this.videoAudioHandler = handler;
+  }
+  render(clips2, frame, selectedId2, backgroundColor, hiddenLayers2 = /* @__PURE__ */ new Set(), fps = 60, isPlaying = false) {
+    this.lastFrame = frame;
+    this.lastFps = Math.max(1, fps);
+    this.lastIsPlaying = isPlaying;
     this.scene.background = new Color(backgroundColor);
     const visibleIds = /* @__PURE__ */ new Set();
     for (const clip of clips2) {
@@ -31141,12 +31281,16 @@ var ThreePreviewRenderer = class {
         "XYZ"
       );
       mesh.visible = true;
+      if (isVideoClip(clip)) {
+        this.syncVideoPlayback(clip, mesh.userData.videoElement, frame, this.lastFps, isPlaying);
+      }
     }
     for (const [id, mesh] of this.meshes) {
       if (!visibleIds.has(id)) {
         mesh.visible = false;
         this.scene.remove(mesh);
         this.cameraExemptScene.remove(mesh);
+        mesh.userData.videoElement?.pause();
       }
     }
     this.updateCamera(clips2, frame, hiddenLayers2);
@@ -31231,9 +31375,20 @@ var ThreePreviewRenderer = class {
     for (const handle of this.cameraHandles.values())
       this.disposeMesh(handle);
   }
+  removeClip(clipId) {
+    const mesh = this.meshes.get(clipId);
+    if (mesh) {
+      this.scene.remove(mesh);
+      this.cameraExemptScene.remove(mesh);
+      this.disposeMesh(mesh);
+      this.meshes.delete(clipId);
+    }
+    this.signatures.delete(clipId);
+  }
   ensureMesh(clip) {
     const signature = JSON.stringify([
       clip.type,
+      clip.mediaType,
       clip.shapeType,
       clip.width,
       clip.height,
@@ -31262,6 +31417,8 @@ var ThreePreviewRenderer = class {
     let mesh;
     if (clip.type === "text")
       mesh = this.createTextMesh(clip);
+    else if (isVideoClip(clip))
+      mesh = this.createVideoMesh(clip);
     else if (clip.type === "image" || clip.type === "media" && clip.mediaType?.startsWith("image/")) {
       mesh = this.createImageMesh(clip, reusableTexture);
     } else
@@ -31328,6 +31485,66 @@ var ThreePreviewRenderer = class {
       material.map = texture;
     }
     return mesh;
+  }
+  createVideoMesh(clip) {
+    const video = document.createElement("video");
+    video.preload = "auto";
+    video.playsInline = true;
+    video.onerror = () => console.error(`Failed to load video: ${clip.mediaName || clip.fileName || clip.id}`);
+    const texture = new VideoTexture(video);
+    texture.colorSpace = SRGBColorSpace;
+    const material = new MeshBasicMaterial({
+      color: clip.src ? "#ffffff" : "#888888",
+      side: DoubleSide,
+      depthWrite: true,
+      depthFunc: LessEqualDepth,
+      map: clip.src ? texture : null
+    });
+    const mesh = new Mesh(
+      new PlaneGeometry(clip.width || 100, clip.height || 100),
+      material
+    );
+    mesh.userData.videoElement = video;
+    mesh.userData.videoTexture = texture;
+    if (clip.src) {
+      video.addEventListener("loadedmetadata", () => {
+        if (this.meshes.get(clip.id) !== mesh || !mesh.visible)
+          return;
+        this.syncVideoPlayback(clip, video, this.lastFrame, this.lastFps, this.lastIsPlaying);
+        texture.needsUpdate = true;
+        this.renderer.render(this.scene, this.camera);
+      }, { once: true });
+      video.addEventListener("seeked", () => {
+        if (this.meshes.get(clip.id) === mesh && mesh.visible) {
+          texture.needsUpdate = true;
+          this.renderer.render(this.scene, this.camera);
+        }
+      });
+      video.src = clip.src;
+      video.load();
+      this.videoAudioHandler?.(clip, video);
+    } else {
+      texture.dispose();
+    }
+    return mesh;
+  }
+  syncVideoPlayback(clip, video, frame, fps, isPlaying) {
+    const targetTime = Math.max(0, (frame - clip.startFrame) / fps);
+    if (video.readyState >= HTMLMediaElement.HAVE_METADATA && Number.isFinite(video.duration)) {
+      const clampedTime = Math.min(video.duration, targetTime);
+      const seekThreshold = isPlaying ? 0.1 : 0.01;
+      if (Math.abs(video.currentTime - clampedTime) > seekThreshold) {
+        video.currentTime = clampedTime;
+      }
+    }
+    if (!isPlaying) {
+      video.pause();
+    } else if (video.paused && !this.videoPlaybackFailures.has(video)) {
+      void video.play().catch((error2) => {
+        this.videoPlaybackFailures.add(video);
+        console.error(`Failed to play video ${clip.mediaName || clip.fileName || clip.id}:`, error2);
+      });
+    }
   }
   createTextMesh(clip) {
     const lines = (clip.text || "").split("\n");
@@ -31453,10 +31670,12 @@ var ThreePreviewRenderer = class {
     handle.visible = true;
   }
   setPointer(clientX, clientY) {
-    const rect = this.options.canvas.getBoundingClientRect();
+    const displayRect = getCanvasDisplayRect(this.options.canvas);
+    if (!displayRect.width || !displayRect.height)
+      return;
     this.pointer.set(
-      (clientX - rect.left) / rect.width * 2 - 1,
-      -((clientY - rect.top) / rect.height) * 2 + 1
+      (clientX - displayRect.left) / displayRect.width * 2 - 1,
+      -((clientY - displayRect.top) / displayRect.height) * 2 + 1
     );
   }
   setDefaultCamera() {
@@ -31498,6 +31717,13 @@ var ThreePreviewRenderer = class {
     })));
   }
   disposeMesh(mesh) {
+    const video = mesh.userData.videoElement;
+    if (video) {
+      video.pause();
+      video.onerror = null;
+      video.removeAttribute("src");
+      video.load();
+    }
     mesh.traverse((object) => {
       if (!(object instanceof Mesh || object instanceof LineSegments))
         return;
@@ -31512,10 +31738,15 @@ var ThreePreviewRenderer = class {
   }
 };
 function isVisualClip(clip) {
-  return clip.type === "text" || clip.type === "shape" || clip.type === "image" || clip.type === "media" && Boolean(clip.mediaType?.startsWith("image/"));
+  return clip.type === "text" || clip.type === "shape" || clip.type === "image" || clip.type === "media" && Boolean(
+    clip.mediaType?.startsWith("image/") || clip.mediaType?.startsWith("video/")
+  );
 }
 function isImageClip(clip) {
   return clip.type === "image" || clip.type === "media" && Boolean(clip.mediaType?.startsWith("image/"));
+}
+function isVideoClip(clip) {
+  return clip.type === "media" && Boolean(clip.mediaType?.startsWith("video/"));
 }
 function createShapeGeometry(clip, width, height) {
   if (clip.shapeType === "circle")
@@ -31637,6 +31868,9 @@ function getClipLabel(clip) {
     return "\xA0\xA0\xA0" + escapeHtml(clip.fileName || clip.mediaName || "Image");
   if (clip.type === "audio")
     return "\xA0\xA0\xA0" + escapeHtml(clip.mediaName || "Audio");
+  if (clip.type === "media" && clip.mediaType?.startsWith("video/")) {
+    return "\xA0\xA0\xA0" + escapeHtml(clip.mediaName || "Video");
+  }
   if (clip.type === "media")
     return "\xA0\xA0\xA0" + escapeHtml(clip.mediaName || "Media");
   if (clip.type === "cameraPosition")
@@ -31746,10 +31980,27 @@ function createTimelineSeek(options) {
 }
 
 // src/interaction/timelineResize.ts
+function getResizeEdgeAtPosition(mouseX, renderedWidth, edgeWidth = 8) {
+  if (renderedWidth <= 0 || mouseX < 0 || mouseX > renderedWidth)
+    return null;
+  const distanceFromLeft = mouseX;
+  const distanceFromRight = renderedWidth - mouseX;
+  const nearLeft = distanceFromLeft <= edgeWidth;
+  const nearRight = distanceFromRight <= edgeWidth;
+  if (nearLeft && nearRight) {
+    return distanceFromLeft <= distanceFromRight ? "left" : "right";
+  }
+  if (nearLeft)
+    return "left";
+  if (nearRight)
+    return "right";
+  return null;
+}
 function createTimelineResize(options) {
   let resizing = false;
   let resizeClipId = null;
   let resizeEdge = null;
+  let pointerOffsetFrames = 0;
   const onResizeMove = (event) => {
     if (!resizing || !resizeClipId || !resizeEdge)
       return;
@@ -31759,7 +32010,7 @@ function createTimelineResize(options) {
     const rect = options.container.getBoundingClientRect();
     const pixelsPerSecond = options.getPixelsPerSecond(options.container.clientWidth - 4);
     const mouseX = event.clientX - rect.left - options.paddingLeft + options.container.scrollLeft;
-    const mouseFrame = Math.round(mouseX / pixelsPerSecond * options.fps());
+    const mouseFrame = Math.round(mouseX / pixelsPerSecond * options.fps() - pointerOffsetFrames);
     const oldStart = clip.startFrame;
     const oldDuration = clip.duration;
     const endFrame = oldStart + oldDuration;
@@ -31819,6 +32070,7 @@ function createTimelineResize(options) {
     resizing = false;
     resizeClipId = null;
     resizeEdge = null;
+    pointerOffsetFrames = 0;
     document.removeEventListener("mousemove", onResizeMove);
     document.removeEventListener("mouseup", onResizeEnd);
     document.removeEventListener("mouseleave", onResizeEnd);
@@ -31835,6 +32087,12 @@ function createTimelineResize(options) {
     resizing = true;
     resizeClipId = clipId;
     resizeEdge = edge;
+    const rect = options.container.getBoundingClientRect();
+    const pixelsPerSecond = options.getPixelsPerSecond(options.container.clientWidth - 4);
+    const mouseX = event.clientX - rect.left - options.paddingLeft + options.container.scrollLeft;
+    const pointerFrame = mouseX / pixelsPerSecond * options.fps();
+    const edgeFrame = edge === "left" ? clip.startFrame : clip.startFrame + clip.duration;
+    pointerOffsetFrames = pointerFrame - edgeFrame;
     options.setSelected(clipId);
     document.addEventListener("mousemove", onResizeMove);
     document.addEventListener("mouseup", onResizeEnd);
@@ -32064,9 +32322,6 @@ function setupSettingsPanel(elements, callbacks) {
     min: 1,
     max: 99,
     default: 10,
-    stages: null,
-    getIsDragging: () => false,
-    updateSliderRangeFn: () => void 0,
     onCommit: callbacks.setLayerCount
   });
   elements.applyLayerCountBtn.addEventListener("click", () => {
@@ -32298,53 +32553,9 @@ function getPixelsPerSecond(zoom, basePixelsPerSecond) {
   return basePixelsPerSecond * zoom;
 }
 function getTotalTimelineWidth(durationSeconds, zoom, containerWidth, basePixelsPerSecond, paddingLeft, paddingRight) {
-  const usableWidth = containerWidth - paddingLeft - paddingRight;
-  const visibleDuration = getVisibleDuration(durationSeconds, zoom);
-  return durationSeconds / visibleDuration * usableWidth + paddingLeft + paddingRight;
+  const timelineContentWidth = durationSeconds * getPixelsPerSecond(zoom, basePixelsPerSecond) + paddingLeft + paddingRight;
+  return Math.max(containerWidth, timelineContentWidth);
 }
-
-// src/config/editorConfig.ts
-var DEFAULT_FONT = '"Hiragino Sans", "Microsoft YaHei", sans-serif';
-var TIMELINE_HEIGHT = 32;
-var TIMELINE_PADDING_LEFT = 80;
-var TIMELINE_PADDING_RIGHT = 20;
-var TIMELINE_HEADER_HEIGHT = 28;
-var MAX_LAYERS = 99;
-var DEFAULT_LAYER_COUNT = 10;
-var BASE_PIXELS_PERSEC = 40;
-var STORAGE_KEY = "aj-videditor-settings";
-var CONFIG = {
-  preventOverlap: true,
-  theme: "white",
-  bgColor: "#000000",
-  layerCount: DEFAULT_LAYER_COUNT,
-  resolution: { width: 1920, height: 1080 },
-  fps: 60,
-  text_wheel_step: 3
-};
-var CLIP_COLORS = {
-  text: "#0065d8",
-  shape: "#ff0055",
-  image: "#16a085",
-  audio: "#f0a128",
-  media: "#16a085",
-  cameraPosition: "#29f078",
-  cameraOrbit: "#00b8a9",
-  rotationControl: "#e2a900",
-  fovControl: "#d15ce8"
-};
-function getClipColor(type) {
-  return CLIP_COLORS[type] || "#888888";
-}
-var SLIDER_STAGES = {
-  coord: [500, 1e3, 2e3, 4e3, 8e3],
-  rotation: [180, 360, 720, 1440],
-  size: [100, 200, 400, 800, 1600, 3200],
-  stroke: [100, 200, 400, 800, 1600, 3200],
-  fontSize: [100, 200, 400, 800, 1600, 3200]
-};
-var DEFAULT_CLIP_DURATION = 3 * CONFIG.fps;
-var MAX_TIMELINE_FRAMES = 60 * 60 * CONFIG.fps;
 
 // src/ui/propertyPanel.ts
 function setPropertyInputsEnabled(enabled, inputs, startInput2, durationInput2) {
@@ -32390,8 +32601,9 @@ function setPropertyInputsEnabled(enabled, inputs, startInput2, durationInput2) 
 }
 function syncPropertyPanel(options) {
   const { selected, inputs } = options;
+  const isVideo = isVideoClip2(selected);
   if (selected && options.hasClips) {
-    options.typeDisplay.textContent = selected.type === "text" ? "\u30C6\u30AD\u30B9\u30C8" : selected.type === "shape" ? "\u56F3\u5F62" : selected.type === "image" ? `\u753B\u50CF: ${selected.fileName || selected.mediaName || ""}` : selected.type === "audio" ? `\u97F3\u58F0: ${selected.mediaName || ""}` : selected.type === "media" ? `\u30E1\u30C7\u30A3\u30A2: ${selected.mediaName || ""}` : selected.type === "cameraPosition" ? "\u30AB\u30E1\u30E9 - \u4F4D\u7F6E\u30FB\u89D2\u5EA6" : selected.type === "cameraOrbit" ? "\u30AB\u30E1\u30E9 - \u56DE\u308A\u8FBC\u307F" : selected.type === "rotationControl" ? "\u56DE\u8EE2\u5236\u5FA1" : selected.type === "fovControl" ? "\u8996\u91CE\u5236\u5FA1" : "-";
+    options.typeDisplay.textContent = selected.type === "text" ? "\u30C6\u30AD\u30B9\u30C8" : selected.type === "shape" ? "\u56F3\u5F62" : selected.type === "image" ? `\u753B\u50CF: ${selected.fileName || selected.mediaName || ""}` : selected.type === "audio" ? `\u97F3\u58F0: ${selected.mediaName || ""}` : isVideo ? `\u52D5\u753B: ${selected.mediaName || selected.fileName || ""}` : selected.type === "media" ? `\u30E1\u30C7\u30A3\u30A2: ${selected.mediaName || ""}` : selected.type === "cameraPosition" ? "\u30AB\u30E1\u30E9 - \u4F4D\u7F6E\u30FB\u89D2\u5EA6" : selected.type === "cameraOrbit" ? "\u30AB\u30E1\u30E9 - \u56DE\u308A\u8FBC\u307F" : selected.type === "rotationControl" ? "\u56DE\u8EE2\u5236\u5FA1" : selected.type === "fovControl" ? "\u8996\u91CE\u5236\u5FA1" : "-";
     if (selected.type === "text") {
       options.textProperties.style.display = "";
       options.shapeProperties.style.display = "none";
@@ -32413,10 +32625,22 @@ function syncPropertyPanel(options) {
       inputs.shapeWidthNumber.value = String(selected.width || 100);
       inputs.shapeHeightSlider.value = String(selected.height || 100);
       inputs.shapeHeightNumber.value = String(selected.height || 100);
-    } else if (selected.type === "image") {
+    } else if (selected.type === "image" || isVideo) {
       options.textProperties.style.display = "none";
       options.shapeProperties.style.display = "";
       setShapeOnlyControlsVisible(options.shapeProperties, false);
+      options.updateSliderRangePositive(
+        inputs.shapeWidthSlider,
+        selected.width || 100,
+        options.sizeStages,
+        options.isDraggingWidth
+      );
+      options.updateSliderRangePositive(
+        inputs.shapeHeightSlider,
+        selected.height || 100,
+        options.sizeStages,
+        options.isDraggingHeight
+      );
       inputs.shapeWidthSlider.value = String(selected.width || 100);
       inputs.shapeWidthNumber.value = String(selected.width || 100);
       inputs.shapeHeightSlider.value = String(selected.height || 100);
@@ -32428,10 +32652,23 @@ function syncPropertyPanel(options) {
     options.cameraProperties.style.display = selected.type === "cameraPosition" || selected.type === "cameraOrbit" || selected.type === "rotationControl" || selected.type === "fovControl" ? "" : "none";
     const audioProperties = document.getElementById("audioProperties");
     if (audioProperties)
-      audioProperties.style.display = selected.type === "audio" ? "" : "none";
-    if (selected.type === "audio") {
-      inputs.audioVolumeSlider.value = String(selected.volume ?? 1);
-      inputs.audioVolumeNumber.value = String(selected.volume ?? 1);
+      audioProperties.style.display = selected.type === "audio" || isVideo ? "" : "none";
+    if (selected.type === "audio" || isVideo) {
+      const minGain = AUDIO_VOLUME.minPercent / AUDIO_VOLUME_PERCENT_SCALE;
+      const maxGain = AUDIO_VOLUME.maxPercent / AUDIO_VOLUME_PERCENT_SCALE;
+      const volumeGain = Math.max(minGain, Math.min(
+        maxGain,
+        selected.volume ?? AUDIO_VOLUME.defaultPercent / AUDIO_VOLUME_PERCENT_SCALE
+      ));
+      const volumePercent = volumeGain * AUDIO_VOLUME_PERCENT_SCALE;
+      options.updateSliderRange(
+        inputs.audioVolumeSlider,
+        volumePercent,
+        options.audioVolumeStages,
+        options.isDraggingAudioVolume
+      );
+      inputs.audioVolumeSlider.value = String(volumePercent);
+      inputs.audioVolumeNumber.value = String(volumePercent);
     }
     inputs.xSlider.value = String(selected.x);
     inputs.ySlider.value = String(selected.y);
@@ -32498,17 +32735,22 @@ function updateSelectedClip(selected, inputs, onRender) {
     inputs.strokeWidthNumber.value = String(selected.strokeWidth);
     inputs.shapeWidthNumber.value = String(selected.width);
     inputs.shapeHeightNumber.value = String(selected.height);
-  } else if (selected.type === "image") {
+  } else if (selected.type === "image" || isVideoClip2(selected)) {
     selected.width = parseFloat(inputs.shapeWidthSlider.value) || 100;
     selected.height = parseFloat(inputs.shapeHeightSlider.value) || 100;
     inputs.shapeWidthNumber.value = String(selected.width);
     inputs.shapeHeightNumber.value = String(selected.height);
-  } else if (selected.type === "audio") {
-    selected.volume = Math.max(0, Math.min(1, parseFloat(inputs.audioVolumeSlider.value) || 0));
-    inputs.audioVolumeSlider.value = String(selected.volume);
-    inputs.audioVolumeNumber.value = String(selected.volume);
   }
-  const positionEditable = selected.type === "text" || selected.type === "shape" || selected.type === "image" || selected.type === "cameraPosition" || selected.type === "rotationControl";
+  if (selected.type === "audio" || isVideoClip2(selected)) {
+    const volumePercent = Math.max(
+      AUDIO_VOLUME.minPercent,
+      Math.min(AUDIO_VOLUME.maxPercent, parseFloat(inputs.audioVolumeSlider.value) || 0)
+    );
+    selected.volume = volumePercent / AUDIO_VOLUME_PERCENT_SCALE;
+    inputs.audioVolumeSlider.value = String(volumePercent);
+    inputs.audioVolumeNumber.value = String(volumePercent);
+  }
+  const positionEditable = selected.type === "text" || selected.type === "shape" || selected.type === "image" || isVideoClip2(selected) || selected.type === "cameraPosition" || selected.type === "rotationControl";
   if (positionEditable) {
     selected.x = parseFloat(inputs.xSlider.value) || 0;
     selected.y = parseFloat(inputs.ySlider.value) || 0;
@@ -32517,7 +32759,7 @@ function updateSelectedClip(selected, inputs, onRender) {
     inputs.yNumber.value = String(selected.y);
     inputs.zNumber.value = String(selected.z);
   }
-  const rotationEditable = selected.type === "text" || selected.type === "shape" || selected.type === "image" || selected.type === "cameraPosition";
+  const rotationEditable = selected.type === "text" || selected.type === "shape" || selected.type === "image" || isVideoClip2(selected) || selected.type === "cameraPosition";
   if (rotationEditable) {
     selected.rotation = parseFloat(inputs.rotationSlider.value) || 0;
     selected.rotationX = parseFloat(inputs.rotationXSlider.value) || 0;
@@ -32530,6 +32772,9 @@ function updateSelectedClip(selected, inputs, onRender) {
   inputs.textInput.style.height = `${Math.min(inputs.textInput.scrollHeight, 120)}px`;
   onRender();
 }
+function isVideoClip2(clip) {
+  return clip?.type === "media" && Boolean(clip.mediaType?.startsWith("video/"));
+}
 function setShapeOnlyControlsVisible(container, visible) {
   const shapeOnlyLabels = /* @__PURE__ */ new Set(["Shape", "Fill", "Stroke", "Stroke W"]);
   container.querySelectorAll(".control-group").forEach((group) => {
@@ -32539,108 +32784,75 @@ function setShapeOnlyControlsVisible(container, visible) {
   });
 }
 function setupPropertySliderDrags(options) {
-  setupSliderDrag(options.xSlider, () => options.setDragging("x", true), () => {
-    options.setDragging("x", false);
-    const selected = options.getSelected();
-    if (selected) {
-      updateSliderRange(options.xSlider, selected.x, options.coordStages, false);
-      options.onRender();
+  const dragConfigs = [
+    { key: "x", slider: options.xSlider, stages: options.coordStages, getValue: (clip) => clip.x },
+    { key: "y", slider: options.ySlider, stages: options.coordStages, getValue: (clip) => clip.y },
+    { key: "z", slider: options.zSlider, stages: options.coordStages, getValue: (clip) => clip.z },
+    { key: "rotation", slider: options.rotationSlider, stages: options.rotationStages, getValue: (clip) => clip.rotation },
+    { key: "rotationX", slider: options.rotationXSlider, stages: options.rotationStages, getValue: (clip) => clip.rotationX || 0 },
+    { key: "rotationY", slider: options.rotationYSlider, stages: options.rotationStages, getValue: (clip) => clip.rotationY || 0 },
+    {
+      key: "cameraVerticalAngle",
+      slider: options.cameraVerticalAngleSlider,
+      stages: options.rotationStages,
+      getValue: (clip) => clip.type === "cameraOrbit" ? clip.cameraVerticalAngle || 0 : 0,
+      appliesTo: (clip) => clip.type === "cameraOrbit"
+    },
+    {
+      key: "cameraHorizontalAngle",
+      slider: options.cameraHorizontalAngleSlider,
+      stages: options.rotationStages,
+      getValue: (clip) => clip.type === "cameraOrbit" ? clip.cameraHorizontalAngle || 0 : 0,
+      appliesTo: (clip) => clip.type === "cameraOrbit"
+    },
+    {
+      key: "cameraOrbitDistance",
+      slider: options.cameraOrbitDistanceSlider,
+      stages: options.coordStages,
+      getValue: (clip) => clip.type === "cameraOrbit" ? clip.cameraOrbitDistance || 0 : 0,
+      appliesTo: (clip) => clip.type === "cameraOrbit"
+    },
+    { key: "stroke", slider: options.strokeWidthSlider, stages: options.strokeStages, getValue: (clip) => clip.strokeWidth || 0, positive: true },
+    { key: "width", slider: options.shapeWidthSlider, stages: options.sizeStages, getValue: (clip) => clip.width || 100, positive: true },
+    { key: "height", slider: options.shapeHeightSlider, stages: options.sizeStages, getValue: (clip) => clip.height || 100, positive: true },
+    {
+      key: "fontSize",
+      slider: options.fontSizeSlider,
+      stages: options.fontSizeStages,
+      getValue: (clip) => clip.fontSize || 50,
+      positive: true,
+      onEnd: (clip) => {
+        options.fontSizeNumber.value = String(clip.fontSize || 50);
+      }
+    },
+    {
+      key: "audioVolume",
+      slider: options.audioVolumeSlider,
+      stages: options.audioVolumeStages,
+      getValue: (clip) => (clip.volume ?? AUDIO_VOLUME.defaultPercent / AUDIO_VOLUME_PERCENT_SCALE) * AUDIO_VOLUME_PERCENT_SCALE,
+      appliesTo: (clip) => clip.type === "audio" || isVideoClip2(clip)
     }
-  });
-  setupSliderDrag(options.ySlider, () => options.setDragging("y", true), () => {
-    options.setDragging("y", false);
-    const selected = options.getSelected();
-    if (selected) {
-      updateSliderRange(options.ySlider, selected.y, options.coordStages, false);
-      options.onRender();
-    }
-  });
-  setupSliderDrag(options.zSlider, () => options.setDragging("z", true), () => {
-    options.setDragging("z", false);
-    const selected = options.getSelected();
-    if (selected) {
-      updateSliderRange(options.zSlider, selected.z, options.coordStages, false);
-      options.onRender();
-    }
-  });
-  setupSliderDrag(options.rotationSlider, () => options.setDragging("rotation", true), () => {
-    options.setDragging("rotation", false);
-    const selected = options.getSelected();
-    if (selected) {
-      updateSliderRange(options.rotationSlider, selected.rotation, options.rotationStages, false);
-      options.onRender();
-    }
-  });
-  for (const [key, slider, getRotation] of [
-    ["rotationX", options.rotationXSlider, (clip) => clip.rotationX || 0],
-    ["rotationY", options.rotationYSlider, (clip) => clip.rotationY || 0]
-  ]) {
-    setupSliderDrag(slider, () => options.setDragging(key, true), () => {
-      options.setDragging(key, false);
-      const selected = options.getSelected();
-      if (selected) {
-        updateSliderRange(slider, getRotation(selected), options.rotationStages, false);
+  ];
+  for (const config of dragConfigs) {
+    setupSliderDrag(
+      config.slider,
+      () => options.setDragging(config.key, true),
+      () => {
+        options.setDragging(config.key, false);
+        const selected = options.getSelected();
+        if (!selected || config.appliesTo && !config.appliesTo(selected))
+          return;
+        const value = config.getValue(selected);
+        if (config.positive) {
+          updateSliderRangePositive(config.slider, value, config.stages, false);
+        } else {
+          updateSliderRange(config.slider, value, config.stages, false);
+        }
+        config.onEnd?.(selected);
         options.onRender();
       }
-    });
+    );
   }
-  setupSliderDrag(options.cameraVerticalAngleSlider, () => options.setDragging("cameraVerticalAngle", true), () => {
-    options.setDragging("cameraVerticalAngle", false);
-    const selected = options.getSelected();
-    if (selected?.type === "cameraOrbit") {
-      updateSliderRange(options.cameraVerticalAngleSlider, selected.cameraVerticalAngle || 0, options.rotationStages, false);
-      options.onRender();
-    }
-  });
-  setupSliderDrag(options.cameraHorizontalAngleSlider, () => options.setDragging("cameraHorizontalAngle", true), () => {
-    options.setDragging("cameraHorizontalAngle", false);
-    const selected = options.getSelected();
-    if (selected?.type === "cameraOrbit") {
-      updateSliderRange(options.cameraHorizontalAngleSlider, selected.cameraHorizontalAngle || 0, options.rotationStages, false);
-      options.onRender();
-    }
-  });
-  setupSliderDrag(options.cameraOrbitDistanceSlider, () => options.setDragging("cameraOrbitDistance", true), () => {
-    options.setDragging("cameraOrbitDistance", false);
-    const selected = options.getSelected();
-    if (selected?.type === "cameraOrbit") {
-      updateSliderRange(options.cameraOrbitDistanceSlider, selected.cameraOrbitDistance || 0, options.coordStages, false);
-      options.onRender();
-    }
-  });
-  setupSliderDrag(options.strokeWidthSlider, () => options.setDragging("stroke", true), () => {
-    options.setDragging("stroke", false);
-    const selected = options.getSelected();
-    if (selected) {
-      updateSliderRangePositive(options.strokeWidthSlider, selected.strokeWidth || 0, options.strokeStages, false);
-      options.onRender();
-    }
-  });
-  setupSliderDrag(options.shapeWidthSlider, () => options.setDragging("width", true), () => {
-    options.setDragging("width", false);
-    const selected = options.getSelected();
-    if (selected) {
-      updateSliderRangePositive(options.shapeWidthSlider, selected.width || 100, options.sizeStages, false);
-      options.onRender();
-    }
-  });
-  setupSliderDrag(options.shapeHeightSlider, () => options.setDragging("height", true), () => {
-    options.setDragging("height", false);
-    const selected = options.getSelected();
-    if (selected) {
-      updateSliderRangePositive(options.shapeHeightSlider, selected.height || 100, options.sizeStages, false);
-      options.onRender();
-    }
-  });
-  setupSliderDrag(options.fontSizeSlider, () => options.setDragging("fontSize", true), () => {
-    options.setDragging("fontSize", false);
-    const selected = options.getSelected();
-    if (selected) {
-      options.fontSizeNumber.value = String(selected.fontSize || 50);
-      updateSliderRangePositive(options.fontSizeSlider, selected.fontSize || 50, options.fontSizeStages, false);
-      options.onRender();
-    }
-  });
 }
 function setupPropertyNumberInputs(options) {
   const { inputs } = options;
@@ -32651,18 +32863,7 @@ function setupPropertyNumberInputs(options) {
       min: -8e3,
       max: 8e3,
       defaultValue: 0,
-      stages: options.coordStages,
-      getIsDragging: () => false,
-      updateRange: (value) => updateSliderRange(inputs.xSlider, value, options.coordStages, false),
-      onCommit: (value) => {
-        const selected = options.getSelected();
-        if (!selected)
-          return;
-        selected.x = value;
-        inputs.xSlider.value = String(value);
-        inputs.xNumber.value = String(value);
-        options.onPreviewRender();
-      }
+      updateRange: (value) => updateSliderRange(inputs.xSlider, value, options.coordStages, false)
     },
     {
       input: inputs.yNumber,
@@ -32670,18 +32871,7 @@ function setupPropertyNumberInputs(options) {
       min: -8e3,
       max: 8e3,
       defaultValue: 0,
-      stages: options.coordStages,
-      getIsDragging: () => false,
-      updateRange: (value) => updateSliderRange(inputs.ySlider, value, options.coordStages, false),
-      onCommit: (value) => {
-        const selected = options.getSelected();
-        if (!selected)
-          return;
-        selected.y = value;
-        inputs.ySlider.value = String(value);
-        inputs.yNumber.value = String(value);
-        options.onPreviewRender();
-      }
+      updateRange: (value) => updateSliderRange(inputs.ySlider, value, options.coordStages, false)
     },
     {
       input: inputs.zNumber,
@@ -32689,18 +32879,7 @@ function setupPropertyNumberInputs(options) {
       min: -8e3,
       max: 8e3,
       defaultValue: 0,
-      stages: options.coordStages,
-      getIsDragging: () => false,
-      updateRange: (value) => updateSliderRange(inputs.zSlider, value, options.coordStages, false),
-      onCommit: (value) => {
-        const selected = options.getSelected();
-        if (!selected)
-          return;
-        selected.z = value;
-        inputs.zSlider.value = String(value);
-        inputs.zNumber.value = String(value);
-        options.onPreviewRender();
-      }
+      updateRange: (value) => updateSliderRange(inputs.zSlider, value, options.coordStages, false)
     },
     {
       input: inputs.rotationNumber,
@@ -32708,18 +32887,7 @@ function setupPropertyNumberInputs(options) {
       min: -1440,
       max: 1440,
       defaultValue: 0,
-      stages: options.rotationStages,
-      getIsDragging: () => false,
-      updateRange: (value) => updateSliderRange(inputs.rotationSlider, value, options.rotationStages, false),
-      onCommit: (value) => {
-        const selected = options.getSelected();
-        if (!selected)
-          return;
-        selected.rotation = value;
-        inputs.rotationSlider.value = String(value);
-        inputs.rotationNumber.value = String(value);
-        options.onPreviewRender();
-      }
+      updateRange: (value) => updateSliderRange(inputs.rotationSlider, value, options.rotationStages, false)
     },
     {
       input: inputs.rotationXNumber,
@@ -32727,18 +32895,7 @@ function setupPropertyNumberInputs(options) {
       min: -1440,
       max: 1440,
       defaultValue: 0,
-      stages: options.rotationStages,
-      getIsDragging: () => false,
-      updateRange: (value) => updateSliderRange(inputs.rotationXSlider, value, options.rotationStages, false),
-      onCommit: (value) => {
-        const selected = options.getSelected();
-        if (!selected)
-          return;
-        selected.rotationX = value;
-        inputs.rotationXSlider.value = String(value);
-        inputs.rotationXNumber.value = String(value);
-        options.onPreviewRender();
-      }
+      updateRange: (value) => updateSliderRange(inputs.rotationXSlider, value, options.rotationStages, false)
     },
     {
       input: inputs.rotationYNumber,
@@ -32746,18 +32903,7 @@ function setupPropertyNumberInputs(options) {
       min: -1440,
       max: 1440,
       defaultValue: 0,
-      stages: options.rotationStages,
-      getIsDragging: () => false,
-      updateRange: (value) => updateSliderRange(inputs.rotationYSlider, value, options.rotationStages, false),
-      onCommit: (value) => {
-        const selected = options.getSelected();
-        if (!selected)
-          return;
-        selected.rotationY = value;
-        inputs.rotationYSlider.value = String(value);
-        inputs.rotationYNumber.value = String(value);
-        options.onPreviewRender();
-      }
+      updateRange: (value) => updateSliderRange(inputs.rotationYSlider, value, options.rotationStages, false)
     },
     {
       input: options.startInput,
@@ -32765,9 +32911,6 @@ function setupPropertyNumberInputs(options) {
       min: 0,
       max: 600,
       defaultValue: 0,
-      stages: null,
-      getIsDragging: () => false,
-      updateRange: () => void 0,
       onCommit: (value) => {
         const selected = options.getSelected();
         if (!selected)
@@ -32789,9 +32932,6 @@ function setupPropertyNumberInputs(options) {
       min: 1,
       max: options.maxTimelineFrames,
       defaultValue: 90,
-      stages: null,
-      getIsDragging: () => false,
-      updateRange: () => void 0,
       onCommit: (value) => {
         const selected = options.getSelected();
         if (!selected)
@@ -32816,18 +32956,7 @@ function setupPropertyNumberInputs(options) {
       min: 0,
       max: 3200,
       defaultValue: 50,
-      stages: options.fontSizeStages,
-      getIsDragging: () => false,
-      updateRange: (value) => updateSliderRangePositive(inputs.fontSizeSlider, value, options.fontSizeStages, false),
-      onCommit: (value) => {
-        const selected = options.getSelected();
-        if (!selected)
-          return;
-        selected.fontSize = value;
-        inputs.fontSizeSlider.value = String(value);
-        inputs.fontSizeNumber.value = String(value);
-        options.onPreviewRender();
-      }
+      updateRange: (value) => updateSliderRangePositive(inputs.fontSizeSlider, value, options.fontSizeStages, false)
     },
     {
       input: inputs.strokeWidthNumber,
@@ -32835,18 +32964,7 @@ function setupPropertyNumberInputs(options) {
       min: 0,
       max: 3200,
       defaultValue: 0,
-      stages: options.strokeStages,
-      getIsDragging: () => false,
-      updateRange: (value) => updateSliderRangePositive(inputs.strokeWidthSlider, value, options.strokeStages, false),
-      onCommit: (value) => {
-        const selected = options.getSelected();
-        if (!selected || selected.type !== "shape")
-          return;
-        selected.strokeWidth = value;
-        inputs.strokeWidthSlider.value = String(value);
-        inputs.strokeWidthNumber.value = String(value);
-        options.onPreviewRender();
-      }
+      updateRange: (value) => updateSliderRangePositive(inputs.strokeWidthSlider, value, options.strokeStages, false)
     },
     {
       input: inputs.shapeWidthNumber,
@@ -32854,18 +32972,7 @@ function setupPropertyNumberInputs(options) {
       min: 0,
       max: 3200,
       defaultValue: 100,
-      stages: options.sizeStages,
-      getIsDragging: () => false,
-      updateRange: (value) => updateSliderRangePositive(inputs.shapeWidthSlider, value, options.sizeStages, false),
-      onCommit: (value) => {
-        const selected = options.getSelected();
-        if (!selected || selected.type !== "shape" && selected.type !== "image")
-          return;
-        selected.width = value;
-        inputs.shapeWidthSlider.value = String(value);
-        inputs.shapeWidthNumber.value = String(value);
-        options.onPreviewRender();
-      }
+      updateRange: (value) => updateSliderRangePositive(inputs.shapeWidthSlider, value, options.sizeStages, false)
     },
     {
       input: inputs.shapeHeightNumber,
@@ -32873,37 +32980,22 @@ function setupPropertyNumberInputs(options) {
       min: 0,
       max: 3200,
       defaultValue: 100,
-      stages: options.sizeStages,
-      getIsDragging: () => false,
-      updateRange: (value) => updateSliderRangePositive(inputs.shapeHeightSlider, value, options.sizeStages, false),
-      onCommit: (value) => {
-        const selected = options.getSelected();
-        if (!selected || selected.type !== "shape" && selected.type !== "image")
-          return;
-        selected.height = value;
-        inputs.shapeHeightSlider.value = String(value);
-        inputs.shapeHeightNumber.value = String(value);
-        options.onPreviewRender();
-      }
+      updateRange: (value) => updateSliderRangePositive(inputs.shapeHeightSlider, value, options.sizeStages, false)
+    },
+    {
+      input: inputs.audioVolumeNumber,
+      slider: inputs.audioVolumeSlider,
+      min: AUDIO_VOLUME.minPercent,
+      max: AUDIO_VOLUME.maxPercent,
+      defaultValue: AUDIO_VOLUME.defaultPercent,
+      updateRange: (value) => updateSliderRange(inputs.audioVolumeSlider, value, options.audioVolumeStages, false)
     },
     {
       input: inputs.cameraFovInput,
       slider: inputs.cameraFovSlider,
       min: 1,
       max: 179,
-      defaultValue: 50,
-      stages: null,
-      getIsDragging: () => false,
-      updateRange: () => void 0,
-      onCommit: (value) => {
-        const selected = options.getSelected();
-        if (!selected || selected.type !== "fovControl")
-          return;
-        selected.cameraFov = value;
-        inputs.cameraFovSlider.value = String(value);
-        inputs.cameraFovInput.value = String(value);
-        options.onPreviewRender();
-      }
+      defaultValue: 50
     },
     {
       input: inputs.cameraVerticalAngleNumber,
@@ -32911,18 +33003,7 @@ function setupPropertyNumberInputs(options) {
       min: -1440,
       max: 1440,
       defaultValue: 0,
-      stages: options.rotationStages,
-      getIsDragging: () => false,
-      updateRange: (value) => updateSliderRange(inputs.cameraVerticalAngleSlider, value, options.rotationStages, false),
-      onCommit: (value) => {
-        const selected = options.getSelected();
-        if (!selected || selected.type !== "cameraOrbit")
-          return;
-        selected.cameraVerticalAngle = value;
-        inputs.cameraVerticalAngleSlider.value = String(value);
-        inputs.cameraVerticalAngleNumber.value = String(value);
-        options.onPreviewRender();
-      }
+      updateRange: (value) => updateSliderRange(inputs.cameraVerticalAngleSlider, value, options.rotationStages, false)
     },
     {
       input: inputs.cameraHorizontalAngleNumber,
@@ -32930,18 +33011,7 @@ function setupPropertyNumberInputs(options) {
       min: -1440,
       max: 1440,
       defaultValue: 0,
-      stages: options.rotationStages,
-      getIsDragging: () => false,
-      updateRange: (value) => updateSliderRange(inputs.cameraHorizontalAngleSlider, value, options.rotationStages, false),
-      onCommit: (value) => {
-        const selected = options.getSelected();
-        if (!selected || selected.type !== "cameraOrbit")
-          return;
-        selected.cameraHorizontalAngle = value;
-        inputs.cameraHorizontalAngleSlider.value = String(value);
-        inputs.cameraHorizontalAngleNumber.value = String(value);
-        options.onPreviewRender();
-      }
+      updateRange: (value) => updateSliderRange(inputs.cameraHorizontalAngleSlider, value, options.rotationStages, false)
     },
     {
       input: inputs.cameraOrbitDistanceNumber,
@@ -32949,18 +33019,7 @@ function setupPropertyNumberInputs(options) {
       min: -8e3,
       max: 8e3,
       defaultValue: 0,
-      stages: options.coordStages,
-      getIsDragging: () => false,
-      updateRange: (value) => updateSliderRange(inputs.cameraOrbitDistanceSlider, value, options.coordStages, false),
-      onCommit: (value) => {
-        const selected = options.getSelected();
-        if (!selected || selected.type !== "cameraOrbit")
-          return;
-        selected.cameraOrbitDistance = value;
-        inputs.cameraOrbitDistanceSlider.value = String(value);
-        inputs.cameraOrbitDistanceNumber.value = String(value);
-        options.onPreviewRender();
-      }
+      updateRange: (value) => updateSliderRange(inputs.cameraOrbitDistanceSlider, value, options.coordStages, false)
     }
   ];
   for (const config of numberConfigs) {
@@ -32968,36 +33027,20 @@ function setupPropertyNumberInputs(options) {
       min: config.min,
       max: config.max,
       default: config.defaultValue,
-      stages: config.stages,
-      getIsDragging: config.getIsDragging,
       updateSliderRangeFn: config.updateRange,
-      onCommit: config.onCommit
+      onCommit: config.onCommit ?? options.onValueChange,
+      onSliderInput: options.onValueChange
     });
   }
 }
 
 // src/interaction/previewInteraction.ts
 function getCanvasCoords(canvas2, event) {
-  const rect = canvas2.getBoundingClientRect();
-  const canvasAspect = canvas2.width / canvas2.height;
-  const rectAspect = rect.width / rect.height;
-  let drawWidth;
-  let drawHeight;
-  let offsetX = 0;
-  let offsetY = 0;
-  if (canvasAspect > rectAspect) {
-    drawWidth = rect.width;
-    drawHeight = rect.width / canvasAspect;
-    offsetY = (rect.height - drawHeight) / 2;
-  } else {
-    drawHeight = rect.height;
-    drawWidth = rect.height * canvasAspect;
-    offsetX = (rect.width - drawWidth) / 2;
-  }
-  const scale = canvas2.width / drawWidth;
+  const displayRect = getCanvasDisplayRect(canvas2);
+  const scale = canvas2.width / displayRect.width;
   return {
-    x: (event.clientX - rect.left - offsetX) * scale,
-    y: (event.clientY - rect.top - offsetY) * scale
+    x: (event.clientX - displayRect.left) * scale,
+    y: (event.clientY - displayRect.top) * scale
   };
 }
 function getClipAtPosition(ctx2, clips2, frame, x, y, width, height, defaultFont) {
@@ -33016,7 +33059,7 @@ function getClipAtPosition(ctx2, clips2, frame, x, y, width, height, defaultFont
   return null;
 }
 function getClipBounds(ctx2, clip, defaultFont) {
-  if (clip.type === "shape" || clip.type === "image" || clip.type === "media" && clip.mediaType?.startsWith("image/")) {
+  if (clip.type === "shape" || clip.type === "image" || clip.type === "media" && (clip.mediaType?.startsWith("image/") || clip.mediaType?.startsWith("video/"))) {
     return { width: clip.width || 100, height: clip.height || 100 };
   }
   if (clip.type !== "text") {
@@ -33131,7 +33174,21 @@ function createAudioEngine(options) {
   const context = new AudioContext();
   const buffers = /* @__PURE__ */ new Map();
   const sources = /* @__PURE__ */ new Map();
+  const mediaElements = /* @__PURE__ */ new Map();
   let scheduleToken = 0;
+  const getClipGain = (clip) => {
+    if (options.isLayerMuted(clip.layerId))
+      return 0;
+    return Math.max(
+      AUDIO_VOLUME.minPercent / AUDIO_VOLUME_PERCENT_SCALE,
+      Math.min(AUDIO_VOLUME.maxPercent / AUDIO_VOLUME_PERCENT_SCALE, clip.volume ?? 1)
+    );
+  };
+  const updateMediaElementGains = () => {
+    for (const active of mediaElements.values()) {
+      active.gain.gain.value = getClipGain(active.clip);
+    }
+  };
   const stopSources = () => {
     for (const { source, gain } of sources.values()) {
       source.onended = null;
@@ -33160,7 +33217,7 @@ function createAudioEngine(options) {
       const source = context.createBufferSource();
       const gain = context.createGain();
       source.buffer = buffer;
-      gain.gain.value = Math.max(0, Math.min(1, clip.volume ?? 1));
+      gain.gain.value = getClipGain(clip);
       source.connect(gain);
       gain.connect(context.destination);
       sources.set(clip.id, { source, gain });
@@ -33189,6 +33246,7 @@ function createAudioEngine(options) {
   const play = (startFrame) => {
     const token = ++scheduleToken;
     stopSources();
+    updateMediaElementGains();
     void ensureContextReady().then(() => {
       if (scheduleToken === token) {
         schedule(startFrame, context.currentTime);
@@ -33209,6 +33267,35 @@ function createAudioEngine(options) {
         console.error("decodeAudioData failed:", err);
       }
     },
+    getDurationSeconds: (clipId) => buffers.get(clipId)?.duration,
+    connectMediaElement(clip, element) {
+      const existing = mediaElements.get(clip.id);
+      if (existing?.element === element) {
+        existing.clip = clip;
+        existing.gain.gain.value = getClipGain(clip);
+        return;
+      }
+      if (existing) {
+        existing.source.disconnect();
+        existing.gain.disconnect();
+        mediaElements.delete(clip.id);
+      }
+      element.volume = 1;
+      const source = context.createMediaElementSource(element);
+      const gain = context.createGain();
+      source.connect(gain);
+      gain.connect(context.destination);
+      const active = { source, gain, element, clip };
+      mediaElements.set(clip.id, active);
+      gain.gain.value = getClipGain(clip);
+    },
+    setMediaElementVolume(clipId, volume) {
+      const active = mediaElements.get(clipId);
+      if (!active)
+        return;
+      active.clip.volume = volume;
+      active.gain.gain.value = getClipGain(active.clip);
+    },
     remove(clipId) {
       const active = sources.get(clipId);
       if (active) {
@@ -33221,6 +33308,13 @@ function createAudioEngine(options) {
         active.gain.disconnect();
         sources.delete(clipId);
       }
+      const mediaElement = mediaElements.get(clipId);
+      if (mediaElement) {
+        mediaElement.element.pause();
+        mediaElement.source.disconnect();
+        mediaElement.gain.disconnect();
+        mediaElements.delete(clipId);
+      }
       buffers.delete(clipId);
     },
     play,
@@ -33231,6 +33325,7 @@ function createAudioEngine(options) {
     seek(frame, isPlaying) {
       const token = ++scheduleToken;
       stopSources();
+      updateMediaElementGains();
       if (!isPlaying)
         return;
       void ensureContextReady().then(() => {
@@ -33242,6 +33337,12 @@ function createAudioEngine(options) {
     dispose() {
       scheduleToken++;
       stopSources();
+      for (const active of mediaElements.values()) {
+        active.element.pause();
+        active.source.disconnect();
+        active.gain.disconnect();
+      }
+      mediaElements.clear();
       buffers.clear();
       void context.close();
     }
@@ -33289,6 +33390,15 @@ function getMedia(id) {
     const request = database.transaction(STORE_NAME, "readonly").objectStore(STORE_NAME).get(id);
     request.onsuccess = () => resolve(request.result);
     request.onerror = () => reject(request.error);
+  }));
+}
+function deleteMedia(id) {
+  return openDatabase().then((database) => new Promise((resolve, reject) => {
+    const transaction = database.transaction(STORE_NAME, "readwrite");
+    transaction.objectStore(STORE_NAME).delete(id);
+    transaction.oncomplete = () => resolve();
+    transaction.onerror = () => reject(transaction.error);
+    transaction.onabort = () => reject(transaction.error);
   }));
 }
 function openDatabase() {
@@ -33418,6 +33528,7 @@ var isDraggingStroke = false;
 var isDraggingWidth = false;
 var isDraggingHeight = false;
 var isDraggingFontSize = false;
+var isDraggingAudioVolume = false;
 var MIN_PANEL_WIDTH = 200;
 var MIN_TIMELINE_HEIGHT = 80;
 var playbackStartTime = 0;
@@ -33426,8 +33537,10 @@ var playbackRafId = null;
 var audioEngine = createAudioEngine({
   getFps: () => CONFIG.fps,
   getClips: () => clips,
-  getMediaById: async (mediaId) => (await getMedia(mediaId))?.blob
+  getMediaById: async (mediaId) => (await getMedia(mediaId))?.blob,
+  isLayerMuted: (layerId) => hiddenLayers.has(layerId)
 });
+sceneRenderer.setVideoAudioHandler((clip, element) => audioEngine.connectMediaElement(clip, element));
 function startPlaybackLoop() {
   if (playbackRafId !== null)
     return;
@@ -33475,6 +33588,7 @@ var playbackController = createPlaybackController({
       stopPlaybackLoop();
       audioEngine.stop();
     }
+    drawPreview();
   },
   onFrameChange: () => void 0
 });
@@ -33620,7 +33734,7 @@ function applyTheme(themeName) {
 }
 function drawPreview() {
   sceneRenderer.resize(CONFIG.resolution.width, CONFIG.resolution.height);
-  sceneRenderer.render(clips, currentFrame, selectedId, CONFIG.bgColor, hiddenLayers);
+  sceneRenderer.render(clips, currentFrame, selectedId, CONFIG.bgColor, hiddenLayers, CONFIG.fps, playbackController.isPlaying);
   ctx.clearRect(0, 0, canvas.width, canvas.height);
 }
 function getClipAtPosition2(clientX, clientY) {
@@ -33763,9 +33877,6 @@ function drawTimeline() {
       min: 1,
       max: 99,
       default: 1,
-      stages: null,
-      getIsDragging: () => false,
-      updateSliderRangeFn: () => void 0,
       onCommit: () => void 0
     });
   }
@@ -33792,6 +33903,7 @@ function drawTimeline() {
       } else {
         hiddenLayers.add(layerId);
       }
+      audioEngine.seek(currentFrame, playbackController.isPlaying);
       drawTimeline();
       drawPreview();
     });
@@ -33803,12 +33915,9 @@ function drawTimeline() {
         return;
       const rect = el.getBoundingClientRect();
       const mouseX = e.clientX - rect.left;
-      const elWidth = rect.width;
-      const edgeThreshold = 8;
-      if (mouseX < edgeThreshold) {
-        startResizeClip(e, id, "left");
-      } else if (mouseX > elWidth - edgeThreshold) {
-        startResizeClip(e, id, "right");
+      const edge = getResizeEdgeAtPosition(mouseX, rect.width);
+      if (edge) {
+        startResizeClip(e, id, edge);
       } else {
         startClipDrag(e, id);
       }
@@ -33820,13 +33929,7 @@ function drawTimeline() {
         return;
       const rect = el.getBoundingClientRect();
       const mouseX = e.clientX - rect.left;
-      const elWidth = rect.width;
-      const edgeThreshold = 8;
-      if (mouseX < edgeThreshold || mouseX > elWidth - edgeThreshold) {
-        el.style.cursor = "ew-resize";
-      } else {
-        el.style.cursor = "grab";
-      }
+      el.style.cursor = getResizeEdgeAtPosition(mouseX, rect.width) ? "ew-resize" : "grab";
     });
     el.addEventListener("mouseleave", () => {
       if (!timelineResize.isResizing() && !timelineDrag.isDragging()) {
@@ -34053,6 +34156,7 @@ function syncUI() {
     isDraggingWidth,
     isDraggingHeight,
     isDraggingFontSize,
+    isDraggingAudioVolume,
     updateSliderRange,
     updateSliderRangePositive,
     coordStages: SLIDER_STAGES.coord,
@@ -34060,12 +34164,14 @@ function syncUI() {
     sizeStages: SLIDER_STAGES.size,
     strokeStages: SLIDER_STAGES.stroke,
     fontSizeStages: SLIDER_STAGES.fontSize,
+    audioVolumeStages: SLIDER_STAGES.audioVolume,
     setEnabled: (enabled) => setPropertyInputsEnabled(enabled, propertyInputs, startInput, durationInput)
   });
   const type = selectedClip?.type;
   const isVisualClip2 = type === "text" || type === "shape";
-  const canEditPosition = type === "text" || type === "shape" || type === "image" || type === "cameraPosition" || type === "rotationControl";
-  const canEditRotation = type === "text" || type === "shape" || type === "image" || type === "cameraPosition";
+  const isVideoClip3 = selectedClip?.type === "media" && selectedClip.mediaType?.startsWith("video/");
+  const canEditPosition = type === "text" || type === "shape" || type === "image" || isVideoClip3 || type === "cameraPosition" || type === "rotationControl";
+  const canEditRotation = type === "text" || type === "shape" || type === "image" || isVideoClip3 || type === "cameraPosition";
   positionProperties.style.display = canEditPosition ? "" : "none";
   rotationProperties.style.display = canEditRotation ? "" : "none";
   orbitCameraProperties.style.display = type === "cameraOrbit" ? "" : "none";
@@ -34156,8 +34262,6 @@ function isSupportedMediaFile(file) {
   return MEDIA_FILE_ACCEPT.split(",").some((extension) => file.name.toLowerCase().endsWith(extension));
 }
 function getMediaMimeType(file) {
-  if (file.type)
-    return file.type;
   const extension = file.name.toLowerCase().split(".").pop();
   const mimeTypes = {
     mp4: "video/mp4",
@@ -34171,48 +34275,137 @@ function getMediaMimeType(file) {
     gif: "image/gif",
     webp: "image/webp"
   };
-  return mimeTypes[extension || ""] || "application/octet-stream";
+  const extensionType = mimeTypes[extension || ""];
+  if (file.type?.startsWith("video/"))
+    return file.type;
+  if (extensionType?.startsWith("video/"))
+    return extensionType;
+  if (!file.type || file.type === "application/octet-stream") {
+    return extensionType || file.type || "application/octet-stream";
+  }
+  return file.type;
+}
+async function getImageDimensions(file) {
+  const objectUrl = URL.createObjectURL(file);
+  try {
+    const image = new Image();
+    return await new Promise((resolve, reject) => {
+      image.addEventListener("load", () => {
+        resolve({ width: image.naturalWidth, height: image.naturalHeight });
+      }, { once: true });
+      image.addEventListener("error", () => {
+        reject(new Error(`Failed to read image dimensions: ${file.name}`));
+      }, { once: true });
+      image.src = objectUrl;
+    });
+  } finally {
+    URL.revokeObjectURL(objectUrl);
+  }
+}
+async function getVideoMetadata(file) {
+  const objectUrl = URL.createObjectURL(file);
+  const video = document.createElement("video");
+  video.preload = "metadata";
+  try {
+    return await new Promise((resolve, reject) => {
+      video.addEventListener("loadedmetadata", () => {
+        if (!video.videoWidth || !video.videoHeight || !Number.isFinite(video.duration) || video.duration <= 0) {
+          reject(new Error(`Invalid video metadata: ${file.name}`));
+          return;
+        }
+        resolve({
+          width: video.videoWidth,
+          height: video.videoHeight,
+          duration: video.duration
+        });
+      }, { once: true });
+      video.addEventListener("error", () => {
+        reject(new Error(`Failed to read video metadata: ${file.name}`));
+      }, { once: true });
+      video.src = objectUrl;
+      video.load();
+    });
+  } finally {
+    video.removeAttribute("src");
+    video.load();
+    URL.revokeObjectURL(objectUrl);
+  }
 }
 async function addMediaFiles(files) {
   let imported = false;
-  for (const file of files) {
-    if (!isSupportedMediaFile(file))
-      continue;
-    const layerId = findAvailableLayer2(currentFrame, DEFAULT_CLIP_DURATION);
-    if (layerId === null) {
-      alert("\u3053\u308C\u4EE5\u4E0A\u30AF\u30EA\u30C3\u30D7\u3092\u8FFD\u52A0\u3067\u304D\u307E\u305B\u3093\u3002\u30EC\u30A4\u30E4\u30FC\u6570\u3092\u5897\u3084\u3059\u304B\u3001\u65E2\u5B58\u306E\u30AF\u30EA\u30C3\u30D7\u3092\u79FB\u52D5\u3057\u3066\u304F\u3060\u3055\u3044\u3002");
-      break;
+  try {
+    for (const file of files) {
+      if (!isSupportedMediaFile(file))
+        continue;
+      const layerId = findAvailableLayer2(currentFrame, DEFAULT_CLIP_DURATION);
+      if (layerId === null) {
+        alert("\u3053\u308C\u4EE5\u4E0A\u30AF\u30EA\u30C3\u30D7\u3092\u8FFD\u52A0\u3067\u304D\u307E\u305B\u3093\u3002\u30EC\u30A4\u30E4\u30FC\u6570\u3092\u5897\u3084\u3059\u304B\u3001\u65E2\u5B58\u306E\u30AF\u30EA\u30C3\u30D7\u3092\u79FB\u52D5\u3057\u3066\u304F\u3060\u3055\u3044\u3002");
+        break;
+      }
+      const mediaType = getMediaMimeType(file);
+      const isImage = mediaType.startsWith("image/");
+      const isVideo = mediaType.startsWith("video/");
+      const imageDimensions = isImage ? await getImageDimensions(file) : null;
+      const videoMetadata = isVideo ? await getVideoMetadata(file) : null;
+      const mediaId = createMediaId();
+      await saveMedia({
+        id: mediaId,
+        name: file.name,
+        size: file.size,
+        type: mediaType,
+        blob: file,
+        createdAt: (/* @__PURE__ */ new Date()).toISOString()
+      });
+      const isAudio = mediaType.startsWith("audio/");
+      const clip = createClip(isImage ? "image" : isAudio ? "audio" : "media", generateId(), layerId, currentFrame, DEFAULT_CLIP_DURATION, DEFAULT_FONT);
+      if (imageDimensions || videoMetadata) {
+        clip.width = imageDimensions?.width ?? videoMetadata?.width;
+        clip.height = imageDimensions?.height ?? videoMetadata?.height;
+      }
+      if (videoMetadata) {
+        clip.duration = Math.max(1, Math.ceil(videoMetadata.duration * CONFIG.fps));
+        clip.volume = 1;
+        const videoLayerId = findAvailableLayer2(currentFrame, clip.duration);
+        if (videoLayerId === null) {
+          await deleteMedia(mediaId);
+          alert("\u52D5\u753B\u306E\u9577\u3055\u306B\u5408\u3046\u7A7A\u304D\u30EC\u30A4\u30E4\u30FC\u304C\u3042\u308A\u307E\u305B\u3093\u3002");
+          break;
+        }
+        clip.layerId = videoLayerId;
+      }
+      clip.mediaId = mediaId;
+      clip.mediaName = file.name;
+      clip.mediaType = mediaType;
+      clip.fileName = file.name;
+      if (isAudio) {
+        clip.volume = AUDIO_VOLUME.defaultPercent / AUDIO_VOLUME_PERCENT_SCALE;
+        try {
+          await audioEngine.prepare(clip);
+          const durationSeconds = audioEngine.getDurationSeconds(clip.id);
+          if (durationSeconds === void 0) {
+            throw new Error(`Failed to determine audio duration: ${file.name}`);
+          }
+          clip.duration = Math.max(1, Math.ceil(durationSeconds * CONFIG.fps));
+          const audioLayerId = findAvailableLayer2(currentFrame, clip.duration);
+          if (audioLayerId !== null)
+            clip.layerId = audioLayerId;
+        } catch (error2) {
+          audioEngine.remove(clip.id);
+          await deleteMedia(mediaId);
+          throw error2;
+        }
+      }
+      clip.src = URL.createObjectURL(file);
+      applyOverlapPrevention2(clip);
+      clips.push(clip);
+      selectedId = clip.id;
+      imported = true;
     }
-    const mediaId = createMediaId();
-    const mediaType = getMediaMimeType(file);
-    await saveMedia({
-      id: mediaId,
-      name: file.name,
-      size: file.size,
-      type: mediaType,
-      blob: file,
-      createdAt: (/* @__PURE__ */ new Date()).toISOString()
-    });
-    const isImage = mediaType.startsWith("image/");
-    const isAudio = mediaType.startsWith("audio/");
-    const clip = createClip(isImage ? "image" : isAudio ? "audio" : "media", generateId(), layerId, currentFrame, DEFAULT_CLIP_DURATION, DEFAULT_FONT);
-    clip.mediaId = mediaId;
-    clip.mediaName = file.name;
-    clip.mediaType = mediaType;
-    clip.fileName = file.name;
-    clip.src = URL.createObjectURL(file);
-    if (isAudio) {
-      clip.volume = 1;
-      await audioEngine.prepare(clip);
+  } finally {
+    if (imported) {
+      updateTimelineDuration2();
+      syncUI();
     }
-    applyOverlapPrevention2(clip);
-    clips.push(clip);
-    selectedId = clip.id;
-    imported = true;
-  }
-  if (imported) {
-    updateTimelineDuration2();
-    syncUI();
   }
 }
 function deleteSelected() {
@@ -34221,8 +34414,12 @@ function deleteSelected() {
   const selectedClip = clips.find((clip) => clip.id === selectedId);
   if (selectedClip?.src?.startsWith("blob:"))
     URL.revokeObjectURL(selectedClip.src);
-  if (selectedClip?.type === "audio")
-    audioEngine.remove(selectedClip.id);
+  if (selectedClip) {
+    sceneRenderer.removeClip(selectedClip.id);
+    if (selectedClip.type === "audio" || selectedClip.type === "media" && selectedClip.mediaType?.startsWith("video/")) {
+      audioEngine.remove(selectedClip.id);
+    }
+  }
   clips = clips.filter((c) => c.id !== selectedId);
   selectedId = clips.length > 0 ? clips[0].id : null;
   updateTimelineDuration2();
@@ -34281,6 +34478,9 @@ function updateSelected() {
         cameraHorizontalAngleNumber.value = String(selectedClip.cameraHorizontalAngle);
         cameraOrbitDistanceNumber.value = String(selectedClip.cameraOrbitDistance);
       }
+      if (selectedClip.type === "media" && selectedClip.mediaType?.startsWith("video/")) {
+        audioEngine.setMediaElementVolume(selectedClip.id, selectedClip.volume ?? 1);
+      }
     }
     audioEngine.seek(currentFrame, playbackController.isPlaying);
     drawPreview();
@@ -34335,13 +34535,15 @@ function setupAllNumberInputs() {
     preventOverlap: () => CONFIG.preventOverlap,
     isOverlapping: isOverlapping2,
     resolveOverlap: resolveOverlap2,
+    onValueChange: updateSelected,
     onPreviewRender: drawPreview,
     onTimelineRender: drawTimeline,
     coordStages: SLIDER_STAGES.coord,
     rotationStages: SLIDER_STAGES.rotation,
     sizeStages: SLIDER_STAGES.size,
     strokeStages: SLIDER_STAGES.stroke,
-    fontSizeStages: SLIDER_STAGES.fontSize
+    fontSizeStages: SLIDER_STAGES.fontSize,
+    audioVolumeStages: SLIDER_STAGES.audioVolume
   });
 }
 function openSettings() {
@@ -34421,7 +34623,6 @@ for (const [buttonId, type] of [
 textInput.addEventListener("input", updateSelected);
 deleteBtn.addEventListener("click", deleteSelected);
 playBtn.addEventListener("click", togglePlay);
-fontSizeSlider.addEventListener("input", updateSelected);
 colorPicker.addEventListener("input", updateSelected);
 shapeTypeSelect.addEventListener("change", updateSelected);
 fillColorPicker.addEventListener("input", updateSelected);
@@ -34431,20 +34632,6 @@ strokeColorPicker.addEventListener("input", () => {
     selected.strokeColor = strokeColorPicker.value;
   updateSelected();
 });
-strokeWidthSlider.addEventListener("input", updateSelected);
-shapeWidthSlider.addEventListener("input", updateSelected);
-shapeHeightSlider.addEventListener("input", updateSelected);
-audioVolumeSlider.addEventListener("input", updateSelected);
-audioVolumeNumber.addEventListener("input", () => {
-  audioVolumeSlider.value = audioVolumeNumber.value;
-  updateSelected();
-});
-xSlider.addEventListener("input", updateSelected);
-ySlider.addEventListener("input", updateSelected);
-zSlider.addEventListener("input", updateSelected);
-rotationSlider.addEventListener("input", updateSelected);
-rotationXSlider.addEventListener("input", updateSelected);
-rotationYSlider.addEventListener("input", updateSelected);
 cameraDisabledInput.addEventListener("change", () => {
   const selected = getSelected();
   if (selected?.type !== "text" && selected?.type !== "shape")
@@ -34452,20 +34639,6 @@ cameraDisabledInput.addEventListener("change", () => {
   selected.cameraDisabled = cameraDisabledInput.checked;
   drawPreview();
 });
-cameraFovSlider.addEventListener("input", () => {
-  cameraFovInput.value = cameraFovSlider.value;
-  updateSelected();
-});
-for (const [slider, number] of [
-  [cameraVerticalAngleSlider, cameraVerticalAngleNumber],
-  [cameraHorizontalAngleSlider, cameraHorizontalAngleNumber],
-  [cameraOrbitDistanceSlider, cameraOrbitDistanceNumber]
-]) {
-  slider.addEventListener("input", () => {
-    number.value = slider.value;
-    updateSelected();
-  });
-}
 setupPropertySliderDrags({
   xSlider,
   ySlider,
@@ -34480,6 +34653,7 @@ setupPropertySliderDrags({
   shapeHeightSlider,
   fontSizeSlider,
   fontSizeNumber,
+  audioVolumeSlider,
   cameraOrbitDistanceSlider,
   getSelected,
   setDragging: (key, isDragging) => {
@@ -34505,12 +34679,15 @@ setupPropertySliderDrags({
       isDraggingHeight = isDragging;
     if (key === "fontSize")
       isDraggingFontSize = isDragging;
+    if (key === "audioVolume")
+      isDraggingAudioVolume = isDragging;
   },
   coordStages: SLIDER_STAGES.coord,
   rotationStages: SLIDER_STAGES.rotation,
   strokeStages: SLIDER_STAGES.stroke,
   sizeStages: SLIDER_STAGES.size,
   fontSizeStages: SLIDER_STAGES.fontSize,
+  audioVolumeStages: SLIDER_STAGES.audioVolume,
   onRender: drawPreview
 });
 fontSelect.addEventListener("change", updateSelected);
@@ -34565,10 +34742,13 @@ async function restoreProject(data) {
     for (const clip of clips) {
       if (clip.src?.startsWith("blob:"))
         URL.revokeObjectURL(clip.src);
-      if (clip.type === "audio")
+      sceneRenderer.removeClip(clip.id);
+      if (clip.type === "audio" || clip.type === "media" && clip.mediaType?.startsWith("video/")) {
         audioEngine.remove(clip.id);
+      }
     }
-    await restoreMediaSources(loadedClips);
+    const projectFps = data.config?.fps || CONFIG.fps;
+    await restoreMediaSources(loadedClips, projectFps);
     await Promise.all(
       loadedClips.filter((clip) => clip.type === "audio").map(
         (clip) => audioEngine.prepare(clip).catch((err) => {
@@ -34600,11 +34780,11 @@ async function restoreProject(data) {
       }
     }
     currentFrame = data.currentFrame || 0;
-    audioEngine.seek(currentFrame, playbackController.isPlaying);
     selectedId = data.selectedId || null;
     if (data.layerCount)
       currentLayerCount = data.layerCount;
     hiddenLayers = Array.isArray(data.hiddenLayers) ? new Set(data.hiddenLayers) : /* @__PURE__ */ new Set();
+    audioEngine.seek(currentFrame, playbackController.isPlaying);
     setOverlapPrevention(true);
     updateTimelineDuration2();
     syncUI();
@@ -34618,7 +34798,7 @@ async function restoreProject(data) {
     alert("\u30D7\u30ED\u30B8\u30A7\u30AF\u30C8\u306E\u8AAD\u307F\u8FBC\u307F\u306B\u5931\u6557\u3057\u307E\u3057\u305F\u3002\n\u30D5\u30A1\u30A4\u30EB\u304C\u58CA\u308C\u3066\u3044\u308B\u53EF\u80FD\u6027\u304C\u3042\u308A\u307E\u3059\u3002");
   }
 }
-async function restoreMediaSources(loadedClips) {
+async function restoreMediaSources(loadedClips, fps) {
   const mediaGroups = /* @__PURE__ */ new Map();
   for (const clip of loadedClips) {
     if (clip.type !== "media" && clip.type !== "image" && clip.type !== "audio")
@@ -34637,11 +34817,21 @@ async function restoreMediaSources(loadedClips) {
       missing.push({ id, clips: groupedClips });
       continue;
     }
+    const mediaType = getMediaMimeType(record);
+    const needsVideoMetadata = mediaType.startsWith("video/") && groupedClips.some((clip) => clip.width === void 0 || clip.height === void 0);
+    const videoMetadata = needsVideoMetadata ? await getVideoMetadata(new File([record.blob], record.name, { type: mediaType })) : null;
     for (const clip of groupedClips) {
       clip.src = URL.createObjectURL(record.blob);
       clip.mediaName = record.name;
-      clip.mediaType = record.type;
+      clip.mediaType = mediaType;
       clip.fileName = record.name;
+      if (clip.type === "media" && mediaType.startsWith("video/"))
+        clip.volume ?? (clip.volume = 1);
+      if (videoMetadata && (clip.width === void 0 || clip.height === void 0)) {
+        clip.width = videoMetadata.width;
+        clip.height = videoMetadata.height;
+        clip.duration = Math.max(1, Math.ceil(videoMetadata.duration * fps));
+      }
     }
   }
   if (missing.length === 0)
@@ -34660,6 +34850,8 @@ OK: \u518D\u9078\u629E\u3059\u308B / \u30AD\u30E3\u30F3\u30BB\u30EB: \u30B9\u30A
       continue;
     const mediaId = createMediaId();
     const mediaType = getMediaMimeType(file);
+    const needsVideoMetadata = mediaType.startsWith("video/") && item.clips.some((clip) => clip.width === void 0 || clip.height === void 0);
+    const videoMetadata = needsVideoMetadata ? await getVideoMetadata(file) : null;
     await saveMedia({
       id: mediaId,
       name: file.name,
@@ -34674,6 +34866,13 @@ OK: \u518D\u9078\u629E\u3059\u308B / \u30AD\u30E3\u30F3\u30BB\u30EB: \u30B9\u30A
       clip.mediaType = mediaType;
       clip.fileName = file.name;
       clip.src = URL.createObjectURL(file);
+      if (clip.type === "media" && mediaType.startsWith("video/"))
+        clip.volume ?? (clip.volume = 1);
+      if (videoMetadata && (clip.width === void 0 || clip.height === void 0)) {
+        clip.width = videoMetadata.width;
+        clip.height = videoMetadata.height;
+        clip.duration = Math.max(1, Math.ceil(videoMetadata.duration * fps));
+      }
     }
   }
 }

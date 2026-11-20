@@ -1,13 +1,18 @@
 import type { Clip } from '../types/clip';
+import { AUDIO_VOLUME, AUDIO_VOLUME_PERCENT_SCALE } from '../config/editorConfig';
 
 export interface AudioEngineOptions {
     getFps: () => number;
     getClips: () => Clip[];
     getMediaById: (mediaId: string) => Promise<Blob | undefined>;
+    isLayerMuted: (layerId: number) => boolean;
 }
 
 export interface AudioEngine {
     prepare(clip: Clip): Promise<void>;
+    getDurationSeconds(clipId: string): number | undefined;
+    connectMediaElement(clip: Clip, element: HTMLMediaElement): void;
+    setMediaElementVolume(clipId: string, volume: number): void;
     remove(clipId: string): void;
     play(startFrame: number): void;
     stop(): void;
@@ -21,11 +26,33 @@ interface ActiveSource {
     gain: GainNode;
 }
 
+interface ActiveMediaElement {
+    source: MediaElementAudioSourceNode;
+    gain: GainNode;
+    element: HTMLMediaElement;
+    clip: Clip;
+}
+
 export function createAudioEngine(options: AudioEngineOptions): AudioEngine {
     const context = new AudioContext();
     const buffers = new Map<string, AudioBuffer>();
     const sources = new Map<string, ActiveSource>();
+    const mediaElements = new Map<string, ActiveMediaElement>();
     let scheduleToken = 0;
+
+    const getClipGain = (clip: Clip): number => {
+        if (options.isLayerMuted(clip.layerId)) return 0;
+        return Math.max(
+            AUDIO_VOLUME.minPercent / AUDIO_VOLUME_PERCENT_SCALE,
+            Math.min(AUDIO_VOLUME.maxPercent / AUDIO_VOLUME_PERCENT_SCALE, clip.volume ?? 1)
+        );
+    };
+
+    const updateMediaElementGains = (): void => {
+        for (const active of mediaElements.values()) {
+            active.gain.gain.value = getClipGain(active.clip);
+        }
+    };
 
     const stopSources = (): void => {
         for (const { source, gain } of sources.values()) {
@@ -56,7 +83,7 @@ export function createAudioEngine(options: AudioEngineOptions): AudioEngine {
             const source = context.createBufferSource();
             const gain = context.createGain();
             source.buffer = buffer;
-            gain.gain.value = Math.max(0, Math.min(1, clip.volume ?? 1));
+            gain.gain.value = getClipGain(clip);
             source.connect(gain);
             gain.connect(context.destination);
             sources.set(clip.id, { source, gain });
@@ -87,6 +114,7 @@ export function createAudioEngine(options: AudioEngineOptions): AudioEngine {
     const play = (startFrame: number): void => {
         const token = ++scheduleToken;
         stopSources();
+        updateMediaElementGains();
         void ensureContextReady().then(() => {
             if (scheduleToken === token) {
                 schedule(startFrame, context.currentTime);
@@ -106,6 +134,35 @@ export function createAudioEngine(options: AudioEngineOptions): AudioEngine {
                 console.error('decodeAudioData failed:', err);
             }
         },
+        getDurationSeconds: (clipId) => buffers.get(clipId)?.duration,
+        connectMediaElement(clip, element): void {
+            const existing = mediaElements.get(clip.id);
+            if (existing?.element === element) {
+                existing.clip = clip;
+                existing.gain.gain.value = getClipGain(clip);
+                return;
+            }
+            if (existing) {
+                existing.source.disconnect();
+                existing.gain.disconnect();
+                mediaElements.delete(clip.id);
+            }
+
+            element.volume = 1;
+            const source = context.createMediaElementSource(element);
+            const gain = context.createGain();
+            source.connect(gain);
+            gain.connect(context.destination);
+            const active = { source, gain, element, clip };
+            mediaElements.set(clip.id, active);
+            gain.gain.value = getClipGain(clip);
+        },
+        setMediaElementVolume(clipId, volume): void {
+            const active = mediaElements.get(clipId);
+            if (!active) return;
+            active.clip.volume = volume;
+            active.gain.gain.value = getClipGain(active.clip);
+        },
         remove(clipId): void {
             const active = sources.get(clipId);
             if (active) {
@@ -119,6 +176,13 @@ export function createAudioEngine(options: AudioEngineOptions): AudioEngine {
                 active.gain.disconnect();
                 sources.delete(clipId);
             }
+            const mediaElement = mediaElements.get(clipId);
+            if (mediaElement) {
+                mediaElement.element.pause();
+                mediaElement.source.disconnect();
+                mediaElement.gain.disconnect();
+                mediaElements.delete(clipId);
+            }
             buffers.delete(clipId);
         },
         play,
@@ -129,6 +193,7 @@ export function createAudioEngine(options: AudioEngineOptions): AudioEngine {
         seek(frame, isPlaying): void {
             const token = ++scheduleToken;
             stopSources();
+            updateMediaElementGains();
             if (!isPlaying) return;
             void ensureContextReady().then(() => {
                 if (scheduleToken === token) schedule(frame, context.currentTime);
@@ -138,6 +203,12 @@ export function createAudioEngine(options: AudioEngineOptions): AudioEngine {
         dispose(): void {
             scheduleToken++;
             stopSources();
+            for (const active of mediaElements.values()) {
+                active.element.pause();
+                active.source.disconnect();
+                active.gain.disconnect();
+            }
+            mediaElements.clear();
             buffers.clear();
             void context.close();
         },

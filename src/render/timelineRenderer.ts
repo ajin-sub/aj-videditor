@@ -109,6 +109,9 @@ function getClipLabel(clip: Clip): string {
     }
     if (clip.type === 'image') return '\u00A0\u00A0\u00A0' + escapeHtml(clip.fileName || clip.mediaName || 'Image');
     if (clip.type === 'audio') return '\u00A0\u00A0\u00A0' + escapeHtml(clip.mediaName || 'Audio');
+    if (clip.type === 'media' && clip.mediaType?.startsWith('video/')) {
+        return '\u00A0\u00A0\u00A0' + escapeHtml(clip.mediaName || 'Video');
+    }
     if (clip.type === 'media') return '\u00A0\u00A0\u00A0' + escapeHtml(clip.mediaName || 'Media');
     if (clip.type === 'cameraPosition') return '\u00A0\u00A0\u00A0Camera Position / Angle';
     if (clip.type === 'cameraOrbit') return '\u00A0\u00A0\u00A0Camera Orbit';

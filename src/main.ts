@@ -21,7 +21,7 @@ import { ThreePreviewRenderer } from './render/threePreviewRenderer';
 import { renderTimeline } from './render/timelineRenderer';
 import { createPlaybackController } from './interaction/playback';
 import { createTimelineSeek } from './interaction/timelineSeek';
-import { createTimelineResize } from './interaction/timelineResize';
+import { createTimelineResize, getResizeEdgeAtPosition } from './interaction/timelineResize';
 import { createTimelineDrag } from './interaction/timelineDrag';
 import { downloadProjectFile, readProjectFile } from './project/projectStorage';
 import { setupLayoutResize } from './interaction/layoutResize';
@@ -40,6 +40,8 @@ import {
     getVisibleDuration as calculateVisibleDuration,
 } from './utils/timelineMetrics';
 import {
+    AUDIO_VOLUME,
+    AUDIO_VOLUME_PERCENT_SCALE,
     BASE_PIXELS_PERSEC,
     CONFIG,
     DEFAULT_CLIP_DURATION,
@@ -69,7 +71,7 @@ import {
     loadSettings as loadStoredSettings,
     saveSettings as saveStoredSettings,
 } from './persistence/settingsStorage';
-import { createMediaId, getMedia, saveMedia } from './persistence/mediaStorage';
+import { createMediaId, deleteMedia, getMedia, saveMedia } from './persistence/mediaStorage';
 
 // -------- configを参照する変数 --------
 let TIMELINE_DURATION = 1;
@@ -211,6 +213,7 @@ let isDraggingStroke = false;
 let isDraggingWidth = false;
 let isDraggingHeight = false;
 let isDraggingFontSize = false;
+let isDraggingAudioVolume = false;
 
 
 // リサイズ用状態
@@ -224,7 +227,9 @@ const audioEngine = createAudioEngine({
     getFps: () => CONFIG.fps,
     getClips: () => clips,
     getMediaById: async (mediaId) => (await getMedia(mediaId))?.blob,
+    isLayerMuted: (layerId) => hiddenLayers.has(layerId),
 });
+sceneRenderer.setVideoAudioHandler((clip, element) => audioEngine.connectMediaElement(clip, element));
 
 function startPlaybackLoop(): void {
     if (playbackRafId !== null) return;
@@ -272,6 +277,7 @@ const playbackController = createPlaybackController({
             stopPlaybackLoop();
             audioEngine.stop();
         }
+        drawPreview();
     },
     onFrameChange: () => undefined,
 });
@@ -436,7 +442,7 @@ function applyTheme(themeName: string): void {
 // -------- プレビュー描画 --------
 function drawPreview(): void {
     sceneRenderer.resize(CONFIG.resolution.width, CONFIG.resolution.height);
-    sceneRenderer.render(clips, currentFrame, selectedId, CONFIG.bgColor, hiddenLayers);
+    sceneRenderer.render(clips, currentFrame, selectedId, CONFIG.bgColor, hiddenLayers, CONFIG.fps, playbackController.isPlaying);
     ctx.clearRect(0, 0, canvas.width, canvas.height);
 }
 
@@ -596,9 +602,6 @@ function drawTimeline(): void {
             min: 1,
             max: 99,
             default: 1,
-            stages: null,
-            getIsDragging: () => false,
-            updateSliderRangeFn: () => undefined,
             onCommit: () => undefined,
         });
     }
@@ -625,6 +628,7 @@ function drawTimeline(): void {
             } else {
                 hiddenLayers.add(layerId);
             }
+            audioEngine.seek(currentFrame, playbackController.isPlaying);
             drawTimeline();
             drawPreview();
         });
@@ -637,13 +641,9 @@ function drawTimeline(): void {
 
             const rect = el.getBoundingClientRect();
             const mouseX = e.clientX - rect.left;
-            const elWidth = rect.width;
-            const edgeThreshold = 8;
-
-            if (mouseX < edgeThreshold) {
-                startResizeClip(e, id, 'left');
-            } else if (mouseX > elWidth - edgeThreshold) {
-                startResizeClip(e, id, 'right');
+            const edge = getResizeEdgeAtPosition(mouseX, rect.width);
+            if (edge) {
+                startResizeClip(e, id, edge);
             } else {
                 startClipDrag(e, id);
             }
@@ -655,14 +655,7 @@ function drawTimeline(): void {
             if (timelineResize.isResizing() || timelineDrag.isDragging()) return;
             const rect = el.getBoundingClientRect();
             const mouseX = e.clientX - rect.left;
-            const elWidth = rect.width;
-            const edgeThreshold = 8;
-
-            if (mouseX < edgeThreshold || mouseX > elWidth - edgeThreshold) {
-                el.style.cursor = 'ew-resize';
-            } else {
-                el.style.cursor = 'grab';
-            }
+            el.style.cursor = getResizeEdgeAtPosition(mouseX, rect.width) ? 'ew-resize' : 'grab';
         });
 
         el.addEventListener('mouseleave', () => {
@@ -906,6 +899,7 @@ function syncUI(): void {
         isDraggingWidth,
         isDraggingHeight,
         isDraggingFontSize,
+        isDraggingAudioVolume,
         updateSliderRange,
         updateSliderRangePositive,
         coordStages: SLIDER_STAGES.coord,
@@ -913,13 +907,16 @@ function syncUI(): void {
         sizeStages: SLIDER_STAGES.size,
         strokeStages: SLIDER_STAGES.stroke,
         fontSizeStages: SLIDER_STAGES.fontSize,
+        audioVolumeStages: SLIDER_STAGES.audioVolume,
         setEnabled: (enabled) => setPropertyInputsEnabled(enabled, propertyInputs, startInput, durationInput),
     });
 
     const type = selectedClip?.type;
     const isVisualClip = type === 'text' || type === 'shape';
-    const canEditPosition = type === 'text' || type === 'shape' || type === 'image' || type === 'cameraPosition' || type === 'rotationControl';
-    const canEditRotation = type === 'text' || type === 'shape' || type === 'image' || type === 'cameraPosition';
+    const isVideoClip = selectedClip?.type === 'media' && selectedClip.mediaType?.startsWith('video/');
+    const canEditPosition = type === 'text' || type === 'shape' || type === 'image' || isVideoClip ||
+        type === 'cameraPosition' || type === 'rotationControl';
+    const canEditRotation = type === 'text' || type === 'shape' || type === 'image' || isVideoClip || type === 'cameraPosition';
     positionProperties.style.display = canEditPosition ? '' : 'none';
     rotationProperties.style.display = canEditRotation ? '' : 'none';
     orbitCameraProperties.style.display = type === 'cameraOrbit' ? '' : 'none';
@@ -1020,59 +1017,145 @@ function isSupportedMediaFile(file: File): boolean {
     return MEDIA_FILE_ACCEPT.split(',').some(extension => file.name.toLowerCase().endsWith(extension));
 }
 
-function getMediaMimeType(file: File): string {
-    if (file.type) return file.type;
+function getMediaMimeType(file: Pick<File, 'type' | 'name'>): string {
     const extension = file.name.toLowerCase().split('.').pop();
     const mimeTypes: Record<string, string> = {
         mp4: 'video/mp4', m4v: 'video/x-m4v', mp3: 'audio/mpeg', wav: 'audio/wav',
         m4a: 'audio/mp4', png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg',
         gif: 'image/gif', webp: 'image/webp',
     };
-    return mimeTypes[extension || ''] || 'application/octet-stream';
+    const extensionType = mimeTypes[extension || ''];
+    if (file.type?.startsWith('video/')) return file.type;
+    if (extensionType?.startsWith('video/')) return extensionType;
+    if (!file.type || file.type === 'application/octet-stream') {
+        return extensionType || file.type || 'application/octet-stream';
+    }
+    return file.type;
+}
+
+async function getImageDimensions(file: File): Promise<{ width: number; height: number }> {
+    const objectUrl = URL.createObjectURL(file);
+    try {
+        const image = new Image();
+        return await new Promise<{ width: number; height: number }>((resolve, reject) => {
+            image.addEventListener('load', () => {
+                resolve({ width: image.naturalWidth, height: image.naturalHeight });
+            }, { once: true });
+            image.addEventListener('error', () => {
+                reject(new Error(`Failed to read image dimensions: ${file.name}`));
+            }, { once: true });
+            image.src = objectUrl;
+        });
+    } finally {
+        URL.revokeObjectURL(objectUrl);
+    }
+}
+
+async function getVideoMetadata(file: File): Promise<{ width: number; height: number; duration: number }> {
+    const objectUrl = URL.createObjectURL(file);
+    const video = document.createElement('video');
+    video.preload = 'metadata';
+    try {
+        return await new Promise((resolve, reject) => {
+            video.addEventListener('loadedmetadata', () => {
+                if (!video.videoWidth || !video.videoHeight || !Number.isFinite(video.duration) || video.duration <= 0) {
+                    reject(new Error(`Invalid video metadata: ${file.name}`));
+                    return;
+                }
+                resolve({
+                    width: video.videoWidth,
+                    height: video.videoHeight,
+                    duration: video.duration,
+                });
+            }, { once: true });
+            video.addEventListener('error', () => {
+                reject(new Error(`Failed to read video metadata: ${file.name}`));
+            }, { once: true });
+            video.src = objectUrl;
+            video.load();
+        });
+    } finally {
+        video.removeAttribute('src');
+        video.load();
+        URL.revokeObjectURL(objectUrl);
+    }
 }
 
 async function addMediaFiles(files: File[]): Promise<void> {
     let imported = false;
-    for (const file of files) {
-        if (!isSupportedMediaFile(file)) continue;
-        const layerId = findAvailableLayer(currentFrame, DEFAULT_CLIP_DURATION);
-        if (layerId === null) {
-            alert('これ以上クリップを追加できません。レイヤー数を増やすか、既存のクリップを移動してください。');
-            break;
-        }
+    try {
+        for (const file of files) {
+            if (!isSupportedMediaFile(file)) continue;
+            const layerId = findAvailableLayer(currentFrame, DEFAULT_CLIP_DURATION);
+            if (layerId === null) {
+                alert('これ以上クリップを追加できません。レイヤー数を増やすか、既存のクリップを移動してください。');
+                break;
+            }
 
-        const mediaId = createMediaId();
-        const mediaType = getMediaMimeType(file);
-        await saveMedia({
-            id: mediaId,
-            name: file.name,
-            size: file.size,
-            type: mediaType,
-            blob: file,
-            createdAt: new Date().toISOString(),
-        });
-        const isImage = mediaType.startsWith('image/');
-        const isAudio = mediaType.startsWith('audio/');
-        // 画像と音声は専用クリップとして作成し、それぞれのメタデータを保持する。
-        const clip = createClip(isImage ? 'image' : isAudio ? 'audio' : 'media', generateId(), layerId, currentFrame, DEFAULT_CLIP_DURATION, DEFAULT_FONT);
-        clip.mediaId = mediaId;
-        clip.mediaName = file.name;
-        clip.mediaType = mediaType;
-        clip.fileName = file.name;
-        clip.src = URL.createObjectURL(file);
-        if (isAudio) {
-            clip.volume = 1;
-            await audioEngine.prepare(clip);
+            const mediaType = getMediaMimeType(file);
+            const isImage = mediaType.startsWith('image/');
+            const isVideo = mediaType.startsWith('video/');
+            const imageDimensions = isImage ? await getImageDimensions(file) : null;
+            const videoMetadata = isVideo ? await getVideoMetadata(file) : null;
+            const mediaId = createMediaId();
+            await saveMedia({
+                id: mediaId,
+                name: file.name,
+                size: file.size,
+                type: mediaType,
+                blob: file,
+                createdAt: new Date().toISOString(),
+            });
+            const isAudio = mediaType.startsWith('audio/');
+            // 画像と音声は専用クリップとして作成し、それぞれのメタデータを保持する。
+            const clip = createClip(isImage ? 'image' : isAudio ? 'audio' : 'media', generateId(), layerId, currentFrame, DEFAULT_CLIP_DURATION, DEFAULT_FONT);
+            if (imageDimensions || videoMetadata) {
+                clip.width = imageDimensions?.width ?? videoMetadata?.width;
+                clip.height = imageDimensions?.height ?? videoMetadata?.height;
+            }
+            if (videoMetadata) {
+                clip.duration = Math.max(1, Math.ceil(videoMetadata.duration * CONFIG.fps));
+                clip.volume = 1;
+                const videoLayerId = findAvailableLayer(currentFrame, clip.duration);
+                if (videoLayerId === null) {
+                    await deleteMedia(mediaId);
+                    alert('動画の長さに合う空きレイヤーがありません。');
+                    break;
+                }
+                clip.layerId = videoLayerId;
+            }
+            clip.mediaId = mediaId;
+            clip.mediaName = file.name;
+            clip.mediaType = mediaType;
+            clip.fileName = file.name;
+            if (isAudio) {
+                clip.volume = AUDIO_VOLUME.defaultPercent / AUDIO_VOLUME_PERCENT_SCALE;
+                try {
+                    await audioEngine.prepare(clip);
+                    const durationSeconds = audioEngine.getDurationSeconds(clip.id);
+                    if (durationSeconds === undefined) {
+                        throw new Error(`Failed to determine audio duration: ${file.name}`);
+                    }
+                    clip.duration = Math.max(1, Math.ceil(durationSeconds * CONFIG.fps));
+                    const audioLayerId = findAvailableLayer(currentFrame, clip.duration);
+                    if (audioLayerId !== null) clip.layerId = audioLayerId;
+                } catch (error) {
+                    audioEngine.remove(clip.id);
+                    await deleteMedia(mediaId);
+                    throw error;
+                }
+            }
+            clip.src = URL.createObjectURL(file);
+            applyOverlapPrevention(clip);
+            clips.push(clip);
+            selectedId = clip.id;
+            imported = true;
         }
-        applyOverlapPrevention(clip);
-        clips.push(clip);
-        selectedId = clip.id;
-        imported = true;
-    }
-
-    if (imported) {
-        updateTimelineDuration();
-        syncUI();
+    } finally {
+        if (imported) {
+            updateTimelineDuration();
+            syncUI();
+        }
     }
 }
 
@@ -1081,7 +1164,13 @@ function deleteSelected(): void {
     if (!selectedId) return;
     const selectedClip = clips.find(clip => clip.id === selectedId);
     if (selectedClip?.src?.startsWith('blob:')) URL.revokeObjectURL(selectedClip.src);
-    if (selectedClip?.type === 'audio') audioEngine.remove(selectedClip.id);
+    if (selectedClip) {
+        sceneRenderer.removeClip(selectedClip.id);
+        if (selectedClip.type === 'audio' ||
+            (selectedClip.type === 'media' && selectedClip.mediaType?.startsWith('video/'))) {
+            audioEngine.remove(selectedClip.id);
+        }
+    }
     clips = clips.filter(c => c.id !== selectedId);
     selectedId = clips.length > 0 ? clips[0].id : null;
     updateTimelineDuration();
@@ -1142,6 +1231,9 @@ function updateSelected(): void {
                 cameraHorizontalAngleNumber.value = String(selectedClip.cameraHorizontalAngle);
                 cameraOrbitDistanceNumber.value = String(selectedClip.cameraOrbitDistance);
             }
+            if (selectedClip.type === 'media' && selectedClip.mediaType?.startsWith('video/')) {
+                audioEngine.setMediaElementVolume(selectedClip.id, selectedClip.volume ?? 1);
+            }
         }
         audioEngine.seek(currentFrame, playbackController.isPlaying);
         drawPreview();
@@ -1172,6 +1264,7 @@ function setupAllNumberInputs(): void {
         preventOverlap: () => CONFIG.preventOverlap,
         isOverlapping,
         resolveOverlap,
+        onValueChange: updateSelected,
         onPreviewRender: drawPreview,
         onTimelineRender: drawTimeline,
         coordStages: SLIDER_STAGES.coord,
@@ -1179,6 +1272,7 @@ function setupAllNumberInputs(): void {
         sizeStages: SLIDER_STAGES.size,
         strokeStages: SLIDER_STAGES.stroke,
         fontSizeStages: SLIDER_STAGES.fontSize,
+        audioVolumeStages: SLIDER_STAGES.audioVolume,
     });
 }
 
@@ -1267,7 +1361,6 @@ textInput.addEventListener('input', updateSelected);
 deleteBtn.addEventListener('click', deleteSelected);
 playBtn.addEventListener('click', togglePlay);
 
-fontSizeSlider.addEventListener('input', updateSelected);
 colorPicker.addEventListener('input', updateSelected);
 
 shapeTypeSelect.addEventListener('change', updateSelected);
@@ -1277,42 +1370,12 @@ strokeColorPicker.addEventListener('input', () => {
     if (selected?.type === 'shape') selected.strokeColor = strokeColorPicker.value;
     updateSelected();
 });
-strokeWidthSlider.addEventListener('input', updateSelected);
-shapeWidthSlider.addEventListener('input', updateSelected);
-shapeHeightSlider.addEventListener('input', updateSelected);
-audioVolumeSlider.addEventListener('input', updateSelected);
-audioVolumeNumber.addEventListener('input', () => {
-    audioVolumeSlider.value = audioVolumeNumber.value;
-    updateSelected();
-});
-
-xSlider.addEventListener('input', updateSelected);
-ySlider.addEventListener('input', updateSelected);
-zSlider.addEventListener('input', updateSelected);
-rotationSlider.addEventListener('input', updateSelected);
-rotationXSlider.addEventListener('input', updateSelected);
-rotationYSlider.addEventListener('input', updateSelected);
 cameraDisabledInput.addEventListener('change', () => {
     const selected = getSelected();
     if (selected?.type !== 'text' && selected?.type !== 'shape') return;
     selected.cameraDisabled = cameraDisabledInput.checked;
     drawPreview();
 });
-cameraFovSlider.addEventListener('input', () => {
-    cameraFovInput.value = cameraFovSlider.value;
-    updateSelected();
-});
-for (const [slider, number] of [
-    [cameraVerticalAngleSlider, cameraVerticalAngleNumber],
-    [cameraHorizontalAngleSlider, cameraHorizontalAngleNumber],
-    [cameraOrbitDistanceSlider, cameraOrbitDistanceNumber],
-] as const) {
-    slider.addEventListener('input', () => {
-        number.value = slider.value;
-        updateSelected();
-    });
-}
-
 setupPropertySliderDrags({
     xSlider,
     ySlider,
@@ -1327,6 +1390,7 @@ setupPropertySliderDrags({
     shapeHeightSlider,
     fontSizeSlider,
     fontSizeNumber,
+    audioVolumeSlider,
     cameraOrbitDistanceSlider,
     getSelected,
     setDragging: (key, isDragging) => {
@@ -1341,12 +1405,14 @@ setupPropertySliderDrags({
         if (key === 'width') isDraggingWidth = isDragging;
         if (key === 'height') isDraggingHeight = isDragging;
         if (key === 'fontSize') isDraggingFontSize = isDragging;
+        if (key === 'audioVolume') isDraggingAudioVolume = isDragging;
     },
     coordStages: SLIDER_STAGES.coord,
     rotationStages: SLIDER_STAGES.rotation,
     strokeStages: SLIDER_STAGES.stroke,
     sizeStages: SLIDER_STAGES.size,
     fontSizeStages: SLIDER_STAGES.fontSize,
+    audioVolumeStages: SLIDER_STAGES.audioVolume,
     onRender: drawPreview,
 });
 
@@ -1407,9 +1473,14 @@ async function restoreProject(data: any): Promise<void> {
         audioEngine.stop();
         for (const clip of clips) {
             if (clip.src?.startsWith('blob:')) URL.revokeObjectURL(clip.src);
-            if (clip.type === 'audio') audioEngine.remove(clip.id);
+            sceneRenderer.removeClip(clip.id);
+            if (clip.type === 'audio' ||
+                (clip.type === 'media' && clip.mediaType?.startsWith('video/'))) {
+                audioEngine.remove(clip.id);
+            }
         }
-        await restoreMediaSources(loadedClips);
+        const projectFps = data.config?.fps || CONFIG.fps;
+        await restoreMediaSources(loadedClips, projectFps);
         await Promise.all(
             loadedClips
                 .filter(clip => clip.type === 'audio')
@@ -1445,10 +1516,10 @@ async function restoreProject(data: any): Promise<void> {
         }
 
         currentFrame = data.currentFrame || 0;
-        audioEngine.seek(currentFrame, playbackController.isPlaying);
         selectedId = data.selectedId || null;
         if (data.layerCount) currentLayerCount = data.layerCount;
         hiddenLayers = Array.isArray(data.hiddenLayers) ? new Set<number>(data.hiddenLayers) : new Set<number>();
+        audioEngine.seek(currentFrame, playbackController.isPlaying);
 
         setOverlapPrevention(true);
         updateTimelineDuration();
@@ -1463,7 +1534,7 @@ async function restoreProject(data: any): Promise<void> {
     }
 }
 
-async function restoreMediaSources(loadedClips: Clip[]): Promise<void> {
+async function restoreMediaSources(loadedClips: Clip[], fps: number): Promise<void> {
     const mediaGroups = new Map<string, Clip[]>();
     for (const clip of loadedClips) {
         if (clip.type !== 'media' && clip.type !== 'image' && clip.type !== 'audio') continue;
@@ -1481,11 +1552,23 @@ async function restoreMediaSources(loadedClips: Clip[]): Promise<void> {
             missing.push({ id, clips: groupedClips });
             continue;
         }
+        const mediaType = getMediaMimeType(record);
+        const needsVideoMetadata = mediaType.startsWith('video/') &&
+            groupedClips.some(clip => clip.width === undefined || clip.height === undefined);
+        const videoMetadata = needsVideoMetadata
+            ? await getVideoMetadata(new File([record.blob], record.name, { type: mediaType }))
+            : null;
         for (const clip of groupedClips) {
             clip.src = URL.createObjectURL(record.blob);
             clip.mediaName = record.name;
-            clip.mediaType = record.type;
+            clip.mediaType = mediaType;
             clip.fileName = record.name;
+            if (clip.type === 'media' && mediaType.startsWith('video/')) clip.volume ??= 1;
+            if (videoMetadata && (clip.width === undefined || clip.height === undefined)) {
+                clip.width = videoMetadata.width;
+                clip.height = videoMetadata.height;
+                clip.duration = Math.max(1, Math.ceil(videoMetadata.duration * fps));
+            }
         }
     }
 
@@ -1501,6 +1584,9 @@ async function restoreMediaSources(loadedClips: Clip[]): Promise<void> {
 
         const mediaId = createMediaId();
         const mediaType = getMediaMimeType(file);
+        const needsVideoMetadata = mediaType.startsWith('video/') &&
+            item.clips.some(clip => clip.width === undefined || clip.height === undefined);
+        const videoMetadata = needsVideoMetadata ? await getVideoMetadata(file) : null;
         await saveMedia({
             id: mediaId,
             name: file.name,
@@ -1515,6 +1601,12 @@ async function restoreMediaSources(loadedClips: Clip[]): Promise<void> {
             clip.mediaType = mediaType;
             clip.fileName = file.name;
             clip.src = URL.createObjectURL(file);
+            if (clip.type === 'media' && mediaType.startsWith('video/')) clip.volume ??= 1;
+            if (videoMetadata && (clip.width === undefined || clip.height === undefined)) {
+                clip.width = videoMetadata.width;
+                clip.height = videoMetadata.height;
+                clip.duration = Math.max(1, Math.ceil(videoMetadata.duration * fps));
+            }
         }
     }
 }

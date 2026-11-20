@@ -1,5 +1,6 @@
 import type { Clip } from '../types/clip';
 import { getClipsAtFrame } from '../domain/timeline';
+import { getCanvasDisplayRect } from '../utils/canvasCoordinates';
 
 export interface PreviewInteractionOptions {
     canvas: HTMLCanvasElement;
@@ -21,29 +22,11 @@ export function getCanvasCoords(
     canvas: HTMLCanvasElement,
     event: MouseEvent
 ): { x: number; y: number } {
-    const rect = canvas.getBoundingClientRect();
-    const canvasAspect = canvas.width / canvas.height;
-    const rectAspect = rect.width / rect.height;
-
-    let drawWidth: number;
-    let drawHeight: number;
-    let offsetX = 0;
-    let offsetY = 0;
-
-    if (canvasAspect > rectAspect) {
-        drawWidth = rect.width;
-        drawHeight = rect.width / canvasAspect;
-        offsetY = (rect.height - drawHeight) / 2;
-    } else {
-        drawHeight = rect.height;
-        drawWidth = rect.height * canvasAspect;
-        offsetX = (rect.width - drawWidth) / 2;
-    }
-
-    const scale = canvas.width / drawWidth;
+    const displayRect = getCanvasDisplayRect(canvas);
+    const scale = canvas.width / displayRect.width;
     return {
-        x: (event.clientX - rect.left - offsetX) * scale,
-        y: (event.clientY - rect.top - offsetY) * scale,
+        x: (event.clientX - displayRect.left) * scale,
+        y: (event.clientY - displayRect.top) * scale,
     };
 }
 
@@ -81,7 +64,8 @@ function getClipBounds(
 ): { width: number; height: number } {
     // 画像の選択範囲はクリップの幅と高さに合わせる。
     if (clip.type === 'shape' || clip.type === 'image' ||
-        (clip.type === 'media' && clip.mediaType?.startsWith('image/'))) {
+        (clip.type === 'media' &&
+            (clip.mediaType?.startsWith('image/') || clip.mediaType?.startsWith('video/')))) {
         return { width: clip.width || 100, height: clip.height || 100 };
     }
     if (clip.type !== 'text') {
